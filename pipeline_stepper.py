@@ -1,143 +1,154 @@
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QFrame
-from PyQt6.QtCore import Qt, pyqtSignal, QRectF
-from PyQt6.QtGui import QPainter, QColor, QPen, QBrush
+from PyQt6.QtWidgets import QWidget, QGridLayout, QLabel
+from PyQt6.QtCore import Qt, pyqtSignal, QPoint
+from PyQt6.QtGui import QFontDatabase, QFont, QPainter, QPen, QColor
 
-class ProgressCircleNode(QWidget):
-    """Custom canvas-drawn circle that turns into an arc progress wheel or a checkmark."""
+class ProgressCircleNode(QLabel):
+    """Sleek UI Node driven by Material Symbols font characters."""
     clicked = pyqtSignal(int)
 
-    def __init__(self, step_index):
+    def __init__(self, step_index, glyph_char, font_family):
         super().__init__()
         self.step_index = step_index
-        self.setFixedSize(26, 26)
-        self.status = "idle"  # idle, active, completed
-        self.progress_value = 0.0  # 0.0 to 1.0 (for the sweeping arc)
+        self.glyph_char = glyph_char
+        
+        self.setFixedSize(32, 32)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        
+        self.setFont(QFont(font_family, 14))
+        self.setText(self.glyph_char)
+        self.status = "idle"
 
-    def set_status(self, status, progress=0.0):
+    def set_status(self, status):
         self.status = status
-        self.progress_value = progress
-        self.update()  # Triggers paintEvent redraw
+        self.update_visuals()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit(self.step_index)
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        rect = QRectF(2, 2, self.width() - 4, self.height() - 4)
-
+    def update_visuals(self):
         if self.status == "idle":
-            # Dull gray unreached circle
-            painter.setPen(QPen(QColor("#7f8c8d"), 2))
-            painter.setBrush(QBrush(QColor("#34495e")))
-            painter.drawEllipse(rect)
-            
+            self.setStyleSheet("""
+                background-color: #34495e; 
+                color: #7f8c8d; 
+                border-radius: 16px; 
+                border: 2px solid #7f8c8d;
+            """)
         elif self.status == "active":
-            # Gray tracking background track
-            painter.setPen(QPen(QColor("#34495e"), 2))
-            painter.setBrush(QBrush(QColor("#1a252f")))
-            painter.drawEllipse(rect)
-            
-            # Sweeping progress arc ring
-            pen = QPen(QColor("#3498db"), 3)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            painter.setPen(pen)
-            # Calculations mapped out: startAngle is top (90 deg), spanAngle sweeps backward
-            start_angle = 90 * 16
-            span_angle = int(-self.progress_value * 360 * 16)
-            painter.drawArc(rect, start_angle, span_angle)
-            
+            self.setStyleSheet("""
+                background-color: #1a252f; 
+                color: #3498db; 
+                border-radius: 16px; 
+                border: 2px solid #3498db;
+            """)
         elif self.status == "completed":
-            # Solid accent green bubble
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QBrush(QColor("#2ecc71")))
-            painter.drawEllipse(rect)
-            
-            # White minimal vector checkmark layout
-            pen = QPen(QColor("#ffffff"), 2.5)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            painter.setPen(pen)
-            # Canvas drawing vector paths relative to widget bounds
-            painter.drawLine(int(self.width()*0.32), int(self.height()*0.5), int(self.width()*0.46), int(self.height()*0.65))
-            painter.drawLine(int(self.width()*0.46), int(self.height()*0.65), int(self.width()*0.72), int(self.height()*0.35))
+            self.setStyleSheet("""
+                background-color: #2ecc71; 
+                color: #ffffff; 
+                border-radius: 16px; 
+                border: 2px solid #2ecc71;
+            """)
 
 
 class PipelineStepperWidget(QWidget):
-    """Horizontal navigation bar managing multi-step text alignments and connector links."""
+    """Horizontal navigation bar managing multi-step text alignments with a canvas-drawn tracking line."""
     stage_selected = pyqtSignal(int)
 
-    def __init__(self, stages_meta):
+    def __init__(self, stages_meta, glyph_map):
         super().__init__()
         self.stages = stages_meta
+        self.glyph_map = glyph_map
         self.nodes = []
-        self.lines = []
         self.current_active_idx = 0
+        
+        # Load custom icon font
+        font_id = QFontDatabase.addApplicationFont("MaterialSymbolsRounded[FILL,GRAD,opsz,wght].ttf")
+        font_families = QFontDatabase.applicationFontFamilies(font_id)
+        self.font_family = font_families[0] if font_families else "Material Symbols Rounded"
+
         self.init_ui()
 
     def init_ui(self):
-        self.main_layout = QHBoxLayout(self)
-        self.main_layout.setContentsMargins(10, 5, 10, 5)
-        self.main_layout.setSpacing(0)
+        self.grid_layout = QGridLayout(self)
+        self.grid_layout.setContentsMargins(20, 10, 20, 10)
+        self.grid_layout.setSpacing(0)
+        self.grid_layout.setVerticalSpacing(8)
+
+        num_stages = len(self.stages)
 
         for i, stage_name in enumerate(self.stages):
-            # Vertical package grouping: Stage #, Circle Node, Stage Label Text
-            step_container = QWidget()
-            step_layout = QVBoxLayout(step_container)
-            step_layout.setContentsMargins(0, 0, 0, 0)
-            step_layout.setSpacing(4)
-            step_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            col_idx = i * 2
 
-            # Above: Smaller font Stage #
-            num_label = QLabel(f"Stage {i+1}")
+            # --- Row 0: Step / Stage Numbers ---
+            num_label = QLabel(f"Step {i+1}")
             num_label.setStyleSheet("color: #7f8c8d; font-size: 10px; font-weight: bold;")
             num_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            step_layout.addWidget(num_label)
+            self.grid_layout.addWidget(num_label, 0, col_idx, Qt.AlignmentFlag.AlignCenter)
 
-            # Center: Interaction Target Circle
-            node = ProgressCircleNode(i)
+            # --- Row 1: Material Design Graphic Nodes ---
+            glyph = self.glyph_map.get(i, "?")
+            node = ProgressCircleNode(i, glyph, self.font_family)
             node.clicked.connect(self.stage_selected.emit)
-            step_layout.addWidget(node)
+            
+            self.grid_layout.addWidget(node, 1, col_idx, Qt.AlignmentFlag.AlignCenter)
             self.nodes.append(node)
 
-            # Below: Full Stage Name String
+            # --- Row 2: Text Descriptions ---
             name_label = QLabel(stage_name)
             name_label.setStyleSheet("color: black; font-size: 11px; font-weight: 500;")
             name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            step_layout.addWidget(name_label)
+            name_label.setWordWrap(True)
+            name_label.setFixedWidth(100)
+            self.grid_layout.addWidget(name_label, 2, col_idx, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
 
-            self.main_layout.addWidget(step_container)
+            # Distribute column space fluidly between nodes
+            if i < num_stages - 1:
+                self.grid_layout.setColumnStretch(col_idx + 1, 1)
 
-            # Add horizontal bridging links between container blocks
-            if i < len(self.stages) - 1:
-                line_wrapper = QWidget()
-                line_box = QVBoxLayout(line_wrapper)
-                line_box.setContentsMargins(10, 20, 10, 0) # Offset to align link paths centrally
-                
-                line = QFrame()
-                line.setFixedHeight(2)
-                line.setStyleSheet("background-color: #34495e;")
-                line_box.addWidget(line)
-                
-                self.main_layout.addWidget(line_wrapper, stretch=1)
-                self.lines.append(line)
+        self.update_step_visuals(0)
 
-        self.update_step_visuals(0, 0.0)
-
-    def update_step_visuals(self, target_idx, active_progress=0.0):
-        """Drives the status assignments down to specific connection pipes and canvas nodes."""
+    def update_step_visuals(self, target_idx):
+        """Updates states of nodes and flags a repaint for the background lines."""
         self.current_active_idx = target_idx
         for i in range(len(self.nodes)):
             if i < target_idx:
                 self.nodes[i].set_status("completed")
-                if i < len(self.lines):
-                    self.lines[i].setStyleSheet("background-color: #2ecc71;")
             elif i == target_idx:
-                self.nodes[i].set_status("active", active_progress)
-                if i < len(self.lines):
-                    self.lines[i].setStyleSheet("background-color: #34495e;")
+                self.nodes[i].set_status("active")
             else:
                 self.nodes[i].set_status("idle")
-                if i < len(self.lines):
-                    self.lines[i].setStyleSheet("background-color: #34495e;")
+        
+        self.update() # Triggers paintEvent to redraw the center lines perfectly
+
+    def paintEvent(self, event):
+        """Draws pixel-perfect connection line tracking segments natively from center to center."""
+        super().paintEvent(event)
+        
+        if len(self.nodes) < 2:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Draw the line segments connecting the centers of the nodes
+        for i in range(len(self.nodes) - 1):
+            node_left = self.nodes[i]
+            node_right = self.nodes[i+1]
+
+            # Calculate geometric centers relative to PipelineStepperWidget coordinates
+            center_left = node_left.geometry().center()
+            center_right = node_right.geometry().center()
+
+            # Determine color state of this line segment
+            if i < self.current_active_idx:
+                line_color = QColor("#2ecc71")  # Completed (Green)
+            else:
+                line_color = QColor("#34495e")  # Unreached (Dark Grey)
+
+            pen = QPen(line_color, 3)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen)
+            
+            # Draw vector line segment
+            painter.drawLine(center_left, center_right)

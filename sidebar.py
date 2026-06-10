@@ -174,7 +174,9 @@ class SidebarWidget(QFrame):
         dir_path = QFileDialog.getExistingDirectory(self, "Select Active Main Batch Folder", self.active_main_directory)
         if dir_path:
             self.active_main_directory = dir_path
-            self.batch_info_label.setText(f"<b>Monitoring Active Batch Folder:</b><br>{self.active_main_directory}")
+            # Refresh the truncated path display and tooltip
+            self.update_path_display(self.active_main_directory)
+            self.batch_info_label.setToolTip(self.active_main_directory)
             self.known_orders.clear()
             
             # Wipe UI clean for new batch folders
@@ -186,8 +188,12 @@ class SidebarWidget(QFrame):
 
     def scan_active_subdirectories(self):
         """Scans the active subdirectories directly."""
+        # Ensure displayed path is refreshed each scan (handles UI refreshes)
+        self.update_path_display(self.active_main_directory)
         if not os.path.exists(self.active_main_directory):
             self.batch_count_label.setText("0")
+            # If directory was removed/renamed externally, indicate missing path
+            self.batch_info_label.setToolTip(self.active_main_directory)
             return
 
         try:
@@ -212,7 +218,7 @@ class SidebarWidget(QFrame):
             state_key = f"{payload.get('stage')}_{payload.get('current_item')}_{payload.get('total_items')}"
 
             if order_dir not in self.known_orders:
-                order_widget = OrderItemWidget(order_dir, payload)
+                order_widget = OrderItemWidget(order_dir, payload, os.path.join(self.active_main_directory, order_dir))
                 order_widget.set_collapsed_mode(self.sidebar_is_collapsed)
                 order_widget.clicked.connect(lambda checked, od=order_dir: self.order_selected.emit(od))
                 
@@ -250,4 +256,18 @@ class SidebarWidget(QFrame):
         self.animation.valueChanged.connect(lambda val: self.setMaximumWidth(val))
         self.animation.start()
 
-
+    def sync_order_widget_state(self, order_id):
+        """Updates a specific order widget's visual state from its manifest file."""
+        if order_id not in self.known_orders:
+            return
+        
+        widget_ref, _ = self.known_orders[order_id]
+        manifest_path = os.path.join(self.active_main_directory, order_id, "order_manifest.json")
+        
+        try:
+            if os.path.exists(manifest_path):
+                with open(manifest_path, 'r') as f:
+                    payload = json.load(f)
+                    widget_ref.update_state(payload)
+        except Exception:
+            pass

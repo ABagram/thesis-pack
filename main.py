@@ -44,10 +44,16 @@ class MainWindow(QMainWindow):
         # Cross-Widget Signal Interceptions
         self.sidebar.order_selected.connect(self.handle_order_selection)
         self.main_content.hardware_trigger_clicked.connect(self.handle_esp_hardware_trigger)
+        self.main_content.order_state_updated.connect(self.handle_order_state_update)
 
     def handle_order_selection(self, order_id):
         """Passes directory context from sidebar over to the main canvas."""
         self.main_content.update_display_details(order_id, self.sidebar.active_main_directory)
+        self.sidebar.sync_order_widget_state(order_id)
+
+    def handle_order_state_update(self, order_id, state_data):
+        """Syncs sidebar order widget when main content updates the order state."""
+        self.sidebar.sync_order_widget_state(order_id)
 
     def handle_esp_hardware_trigger(self):
         """Mimics the ESP creating a subdirectory instantly on button-press."""
@@ -74,12 +80,13 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    
     try:
         with open("style.qss", "r") as f:
             app.setStyleSheet(f.read())
     except FileNotFoundError:
         print("Warning: style.qss file not found. Running with default styles.")
-
+    
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
