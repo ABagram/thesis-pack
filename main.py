@@ -2,12 +2,14 @@ import sys
 import os
 import json
 from PyQt6.QtCore import QPropertyAnimation, QEasingCurve, QTimer, Qt, pyqtSignal
+from PyQt6.QtGui import QFont, QFontDatabase
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, 
                              QHBoxLayout, QVBoxLayout, QPushButton, 
                              QLabel, QFrame, QScrollArea, QFileDialog)
 from order_item_widget import OrderItemWidget
 from sidebar import SidebarWidget
 from main_content_widget import MainContentWidget
+from load_font_folder import load_font_folder
 
 class MainWindow(QMainWindow):
     """The orchestration window coordinating communication between the Sidebar and Main Panel."""
@@ -80,6 +82,11 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    
+    load_font_folder("./fonts/Poppins")
+    
+    # Ensure Poppins is the app default font after loading the font resources
+    app.setFont(QFontDatabase.font("Poppins", "", 10))
     
     try:
         with open("style.qss", "r") as f:

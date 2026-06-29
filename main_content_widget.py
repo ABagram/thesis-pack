@@ -1,8 +1,13 @@
 import os
 import json
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame, QStackedWidget
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSize
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QLabel, QFrame, QStackedWidget
+from PyQt6.QtGui import QFont
 from pipeline_stepper import PipelineStepperWidget
+import subprocess
+import re
+from copy_string_widget import CopyStringWidget
+from wifi_status_widget import WifiStatusWidget
 
 # Define your pipeline array as a single source of truth
 PRODUCTION_STAGES = [
@@ -22,6 +27,15 @@ GLYPH_MAP = {
     6: "\ue2c3", # cloud_upload
     7: "\ue86c"  # check_circle
 }
+
+# Device/icon glyphs (private use area glyphs from the Poppins TTF)
+GLYPH_CAMERA = "\ue438"
+GLYPH_PC = "\ue30c"
+GLYPH_CNC = "\ue131"
+# Status glyphs: connected / disconnected
+GLYPH_STATUS_CONNECTED = "\ue63e" 
+GLYPH_STATUS_DISCONNECTED = "\ue648"
+GLYPH_COPY = "\ue14d" # content_copy (Verify this hex matches your exact TTF font)
 
 # Unified directory manifest parsing lookup map
 STAGE_INDEX_MAP = {
@@ -46,13 +60,117 @@ class MainContentWidget(QWidget):
         self.current_order_directory = None
         self.sim_timer = QTimer(self)
         self.sim_timer.timeout.connect(self._advance_mock_pipeline)
+        self.current_ssid = None
+        self.net_timer = QTimer(self)
+        self.net_timer.setInterval(3000)  # poll every 3s
+        self.net_timer.timeout.connect(self.refresh_network_status)
         self.init_ui()
+        self.net_timer.start()
 
     def init_ui(self):
         self.content_layout = QVBoxLayout(self)
         self.content_layout.setContentsMargins(15, 15, 15, 15)
         self.content_layout.setSpacing(15)
         
+        self.network_details_frame = QFrame()
+        self.content_layout.addWidget(self.network_details_frame)
+        
+        # Create a primary horizontal container to hold both functional halves
+        network_main_layout = QHBoxLayout(self.network_details_frame)
+        network_main_layout.setContentsMargins(12, 10, 12, 10)
+        network_main_layout.setSpacing(20)
+
+        # --- LEFT ZONE: Credentials (SSID/PW stacked vertically) ---
+        credentials_widget = QWidget()
+        credentials_layout = QGridLayout(credentials_widget)
+        credentials_layout.setContentsMargins(0, 0, 0, 0)
+        credentials_layout.setHorizontalSpacing(8)
+        credentials_layout.setVerticalSpacing(6)
+
+        # Populate SSID Row
+        self.ssid_icon = QLabel("\ue63e")  # wifi icon
+        self.ssid_icon.setStyleSheet("font-size: 14px; color: #64748b;")
+        self.ssid_label = QLabel("SSID:")
+        self.ssid_label.setStyleSheet("font-weight: bold; color: #475569; font-size: 12px")
+        
+        wifi_ssid = self.get_connected_ssid()
+        self.ssid_detail = CopyStringWidget(wifi_ssid)
+
+        credentials_layout.addWidget(self.ssid_icon, 0, 0)
+        credentials_layout.addWidget(self.ssid_label, 0, 1)
+        credentials_layout.addWidget(self.ssid_detail, 0, 2)
+
+        # Populate Password Row
+        self.pw_icon = QLabel("\ue73c")    # lock icon
+        self.pw_icon.setStyleSheet("font-size: 14px; color: #64748b;")
+        self.pw_label = QLabel("Pass:")
+        self.pw_label.setStyleSheet("font-weight: bold; color: #475569; font-size: 12px;")
+
+        wifi_pw = self.get_wifi_password(wifi_ssid) if wifi_ssid != "No Wi-Fi" else "Unavailable"
+        self.pw_detail = CopyStringWidget(wifi_pw)
+        self.pw_detail.setObjectName("PasswordDetail")
+
+        credentials_layout.addWidget(self.pw_icon, 1, 0)
+        credentials_layout.addWidget(self.pw_label, 1, 1)
+        credentials_layout.addWidget(self.pw_detail, 1, 2)
+
+        # Drop credentials stack into the main ribbon layout
+        network_main_layout.addWidget(credentials_widget)
+
+        # Add a spacer to separate credentials on the left from the statuses on the right
+        network_main_layout.addStretch(1)
+        
+        # --- RIGHT ZONE: ESP Hardware Monitoring Strip ---
+        status_strip_widget = QWidget()
+        status_strip_layout = QHBoxLayout(status_strip_widget)
+        status_strip_layout.setContentsMargins(0, 0, 0, 0)
+        status_strip_layout.setSpacing(12)
+
+        status_glyph = GLYPH_STATUS_CONNECTED if wifi_ssid != "No Wi-Fi" else GLYPH_STATUS_DISCONNECTED
+
+        # -- 1. Camera Node Badge --
+        self.camera_widget = WifiStatusWidget(
+        system_name="ORDER CAPTURE STATION",
+        glyph=GLYPH_CAMERA,
+        temp_ssid="CAM_SETUP_AP", # set up via WiFiManager.autoConnect
+        temp_pw="SST@2002", # set up via WiFiManager.autoConnect
+        target_ssid=wifi_ssid,
+        target_pw=wifi_pw,
+        device_host="CAM-MASTER",
+        disabled_tooltip=(
+            "Camera captive portal "
+            "setup broadcast cannot "
+            "be found near laptop."
+        )
+    )
+        status_strip_layout.addWidget(self.camera_widget)
+
+        # -- 2. PC Server Node Badge --
+        self.pc_widget = WifiStatusWidget(
+        system_name="PC",
+        glyph=GLYPH_PC,
+        temp_ssid=None,
+        temp_pw=None,
+        target_ssid=wifi_ssid,
+        target_pw=wifi_pw
+    )
+        status_strip_layout.addWidget(self.pc_widget)
+
+        # -- 3. CNC Machine Node Badge --
+        self.cnc_widget = WifiStatusWidget(
+        system_name="BOX BLANK MAKER",
+        glyph=GLYPH_CNC,
+        temp_ssid="CUTTER_SETUP_AP", # set up via WiFiManager.autoConnect
+        temp_pw="SST@2002", # set up via WiFiManager.autoConnect
+        target_ssid=wifi_ssid,
+        target_pw=wifi_pw,
+        device_host="CUTTER-MASTER",  # change to real IP
+    )
+        status_strip_layout.addWidget(self.cnc_widget)
+
+        # Mount the finished hardware monitoring strip into the ribbon
+        network_main_layout.addWidget(status_strip_widget)
+
         # 1. Physical Loop Emulator Viewport controls
         self.mock_hw_frame = QFrame()
         self.mock_hw_frame.setStyleSheet("background-color: #1a252f; border: 1px dashed #34495e; border-radius: 6px;")
@@ -100,6 +218,205 @@ class MainContentWidget(QWidget):
         self.btn_simulate_esp.clicked.connect(self.start_mock_pipeline_animation)
         self.btn_order_esp.clicked.connect(self.hardware_trigger_clicked.emit)
 
+    def get_connected_ssid(self):
+        """Get currently connected Wi-Fi SSID on Windows."""
+        try:
+            result = subprocess.check_output(
+                ["netsh", "wlan", "show", "interfaces"],
+                text=True,
+                encoding="utf-8",
+                errors="ignore"
+            )
+
+            match = re.search(
+                r"^\s*SSID\s*:\s(.+)$",
+                result,
+                re.MULTILINE
+            )
+
+            if match:
+                ssid = match.group(1).strip()
+
+                # Ignore blank or disconnected states
+                if ssid and ssid.lower() != "ssid":
+                    return ssid
+
+        except Exception as e:
+            print("SSID Error:", e)
+
+        return "No Wi-Fi"
+
+    def is_5ghz_network(
+        self,
+        ssid
+    ):
+        if not ssid:
+            return False
+
+        ssid = ssid.upper()
+
+        return (
+            "_5G" in ssid
+            or ssid.endswith("5G")
+            or "5GHZ" in ssid
+        )
+    
+    def refresh_network_status(self):
+        """Polls the system for Wi-Fi changes and updates the UI if anything changed."""
+        # --- 1. Keep your existing connection check logic ---
+        ssid = self.get_connected_ssid()
+        if ssid != self.current_ssid:
+            self.current_ssid = ssid
+            self.ssid_detail.update_text(
+                ssid
+            )
+
+            pw = (
+                self.get_wifi_password(
+                    ssid
+                )
+                if ssid != "No Wi-Fi"
+                else "Unavailable"
+            )
+
+            self.pw_detail.update_text(
+                pw
+            )
+
+            # --------------------------------
+            # Detect 5GHz network
+            # --------------------------------
+            if self.is_5ghz_network(
+                ssid
+            ):
+
+                print(
+                    "WARNING: ESP32 only "
+                    "supports 2.4GHz Wi-Fi"
+                )
+
+                self.camera_widget.set_connected_network(
+                    "⚠ 2.4GHz Required"
+                )
+
+                self.cnc_widget.set_connected_network(
+                    "⚠ 2.4GHz Required"
+                )
+
+            else:
+
+                self.camera_widget.target_ssid = (
+                    ssid
+                )
+
+                self.camera_widget.target_pw = (
+                    pw
+                )
+
+                self.cnc_widget.target_ssid = (
+                    ssid
+                )
+
+                self.cnc_widget.target_pw = (
+                    pw
+                )
+
+            self.pc_widget.target_ssid = (
+                ssid
+            )
+
+            self.pc_widget.target_pw = (
+                pw
+            )
+            
+            self.camera_widget.target_ssid = ssid
+            self.camera_widget.target_pw = pw
+
+            self.pc_widget.target_ssid = ssid
+            self.pc_widget.target_pw = pw
+
+            self.cnc_widget.target_ssid = ssid
+            self.cnc_widget.target_pw = pw
+
+        status_text = "Online" if ssid != "No Wi-Fi" else "Offline"
+        if hasattr(self, 'wifi_status'):
+            self.wifi_status.setText(f"Status: {status_text}")
+
+        # --- 3. Scan nearby SSIDs to dynamically enable/disable the "Setup" buttons ---
+        visible_ssids = self.get_visible_ssids()
+        
+        if hasattr(self, 'camera_widget'):
+            self.camera_widget.poll_device_network()
+        if hasattr(self, 'pc_widget'):
+            self.pc_widget.set_online_status(
+                ssid != "No Wi-Fi"
+            )
+
+            self.pc_widget.set_connected_network(
+                ssid
+            )
+            self.pc_widget.poll_device_network()
+            
+        if hasattr(self, 'cnc_widget'):
+            self.cnc_widget.poll_device_network()
+            
+        pc_online = (
+            ssid != "No Wi-Fi"
+        )
+
+        self.pc_widget.set_online_status(
+            pc_online
+        )
+
+        self.pc_widget.set_connected_network(
+            ssid
+        )
+
+    def get_wifi_password(self, ssid):
+        """Get saved password for a Wi-Fi profile."""
+        try:
+            result = subprocess.check_output(
+                ["netsh", "wlan", "show", "profile", ssid, "key=clear"],
+                text=True,
+                encoding="utf-8",
+                errors="ignore"
+            )
+
+            match = re.search(
+                r"Key Content\s*:\s(.+)",
+                result
+            )
+
+            if match:
+                return match.group(1).strip()
+
+        except Exception as e:
+            print("Password Error:", e)
+
+        return "Unavailable"
+    
+    def get_visible_ssids(self):
+        """Scan and return a list of all unique Wi-Fi SSIDs currently in range."""
+        try:
+            # This command lists all broadcasted Wi-Fi networks in range
+            result = subprocess.check_output(
+                ["netsh", "wlan", "show", "networks"],
+                text=True,
+                encoding="utf-8",
+                errors="ignore"
+            )
+            
+            # Regex to capture the SSID name line
+            # Match lines like "SSID 1 : My_Camera_Network"
+            ssids = re.findall(r"SSID\s+\d+\s+:\s+(.+)", result)
+            
+            # Return a list of clean, trimmed strings
+            return [ssid.strip() for ssid in ssids if ssid.strip()]
+            
+        except Exception as e:
+            print("SSID Scan Error:", e)
+            return []
+    
     def handle_stage_navigation(self, index):
         self.tab_stack.setCurrentIndex(index)
 

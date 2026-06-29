@@ -92,9 +92,9 @@ class OrderItemWidget(QPushButton):
 
         self.setStyleSheet("""
             QPushButton#MainOrderItemWidget { 
-                background-color: #ffffff; 
+                background-color: #2effffff; 
                 border-radius: 6px; 
-                border: 1px solid #e2e8f0;
+                border: 1px solid #e5e7eb;
                 text-align: left;
             } 
             QPushButton#MainOrderItemWidget:hover { 
@@ -176,7 +176,7 @@ class OrderItemWidget(QPushButton):
         for idx in range(self.num_stages):
             node = self.step_nodes[idx]
             if idx < self.active_step_index:
-                node.setStyleSheet("background-color: #2ecc71; border-radius: 5px; border: none;")
+                node.setStyleSheet("background-color: #166534; border-radius: 5px; border: none;")
             elif idx == self.active_step_index:
                 node.setStyleSheet("background-color: #3498db; border-radius: 5px; border: 1px solid #2980b9;")
             else:
@@ -198,7 +198,7 @@ class OrderItemWidget(QPushButton):
             pt_right = self.step_nodes[i+1].geometry().center() + self.track_container.pos()
 
             if i < self.active_step_index:
-                line_color = QColor("#2ecc71")
+                line_color = QColor("#166534")
             else:
                 line_color = QColor("#cbd5e1")
 

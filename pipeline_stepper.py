@@ -1,3 +1,4 @@
+import os
 from PyQt6.QtWidgets import QWidget, QGridLayout, QLabel
 from PyQt6.QtCore import Qt, pyqtSignal, QPoint
 from PyQt6.QtGui import QFontDatabase, QFont, QPainter, QPen, QColor
@@ -14,6 +15,7 @@ class ProgressCircleNode(QLabel):
         self.setFixedSize(32, 32)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setContentsMargins(0, 0, 0, 0)
         
         self.setFont(QFont(font_family, 14))
         self.setText(self.glyph_char)
@@ -37,17 +39,17 @@ class ProgressCircleNode(QLabel):
             """)
         elif self.status == "active":
             self.setStyleSheet("""
-                background-color: #1a252f; 
+                background-color: #fac115; 
                 color: #3498db; 
                 border-radius: 16px; 
                 border: 2px solid #3498db;
             """)
         elif self.status == "completed":
             self.setStyleSheet("""
-                background-color: #2ecc71; 
-                color: #ffffff; 
+                background-color: #166534; 
+                color: #dcfce7; 
                 border-radius: 16px; 
-                border: 2px solid #2ecc71;
+                border: 2px solid #166534;
             """)
 
 
@@ -63,7 +65,8 @@ class PipelineStepperWidget(QWidget):
         self.current_active_idx = 0
         
         # Load custom icon font
-        font_id = QFontDatabase.addApplicationFont("MaterialSymbolsRounded[FILL,GRAD,opsz,wght].ttf")
+        font_path = "fonts/MaterialSymbolsRounded[FILL,GRAD,opsz,wght].ttf"
+        font_id = QFontDatabase.addApplicationFont(font_path)
         font_families = QFontDatabase.applicationFontFamilies(font_id)
         self.font_family = font_families[0] if font_families else "Material Symbols Rounded"
 
@@ -82,7 +85,7 @@ class PipelineStepperWidget(QWidget):
 
             # --- Row 0: Step / Stage Numbers ---
             num_label = QLabel(f"Step {i+1}")
-            num_label.setStyleSheet("color: #7f8c8d; font-size: 10px; font-weight: bold;")
+            num_label.setStyleSheet("color: #0F172A; font-size: 10px; font-weight: bold;")
             num_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.grid_layout.addWidget(num_label, 0, col_idx, Qt.AlignmentFlag.AlignCenter)
 
@@ -142,7 +145,7 @@ class PipelineStepperWidget(QWidget):
 
             # Determine color state of this line segment
             if i < self.current_active_idx:
-                line_color = QColor("#2ecc71")  # Completed (Green)
+                line_color = QColor("#166534")  # Completed (Green)
             else:
                 line_color = QColor("#34495e")  # Unreached (Dark Grey)
 

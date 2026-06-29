@@ -14,7 +14,9 @@ class SidebarWidget(QFrame):
     def __init__(self, initial_batch_dir):
         super().__init__()
         self.setObjectName("Sidebar")
+        
         self.active_main_directory = initial_batch_dir
+        self.order_simple_status = {}
         self.known_orders = {}
         self.sidebar_is_collapsed = False
         
@@ -46,18 +48,10 @@ class SidebarWidget(QFrame):
         header_row_layout.setSpacing(6)
         
         self.batch_title_label = QLabel("<b>Active Batch</b>")
-        self.batch_title_label.setStyleSheet("font-size: 13px; color: #181818;")
+        self.batch_title_label.setObjectName("BatchTitle")
         
         self.batch_count_label = QLabel("0")
-        self.batch_count_label.setStyleSheet("""
-            font-size: 11px; 
-            font-weight: bold; 
-            color: #34495e; 
-            background-color: rgba(52, 73, 94, 0.15); 
-            border: 1px solid #34495e; 
-            border-radius: 9px; 
-            padding: 1px 7px;
-        """)
+        self.batch_count_label.setObjectName("BatchCount")
         
         self.btn_set_active_batch = QPushButton("Change")
         self.btn_set_active_batch.clicked.connect(self.change_active_batch_directory)
@@ -69,10 +63,9 @@ class SidebarWidget(QFrame):
         
         # Path Display (Truncated to last 2 folders below the header)
         self.batch_info_label = QLabel()
+        self.batch_info_label.setObjectName("BatchInfo")
         self.batch_info_label.setWordWrap(True)
-        self.batch_info_label.setStyleSheet(
-            "font-size: 12px; color: #181818; padding: 6px; background: #efedeb; border-radius: 4px;"
-        )
+        
         # Helper function to truncate and set path display text
         self.update_path_display(self.active_main_directory)
 
@@ -82,6 +75,20 @@ class SidebarWidget(QFrame):
         self.sidebar_layout.addWidget(self.batch_frame)
         
         # Scroll Area for tracking child subdirectories
+        # --- Order Filter Controls (All / In Progress / In Queue)
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(6)
+        filter_label = QLabel("Filter:")
+        filter_label.setStyleSheet("font-size:11px; color: #181818;")
+        self.order_filter_dropdown = QComboBox()
+        self.order_filter_dropdown.addItems(["All", "In Progress", "In Queue"])
+        self.order_filter_dropdown.currentIndexChanged.connect(lambda _: self.apply_order_filter())
+
+        filter_row.addWidget(filter_label)
+        filter_row.addWidget(self.order_filter_dropdown)
+        filter_row.addStretch()
+        self.sidebar_layout.addLayout(filter_row)
+
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setStyleSheet("background: transparent; border: none;")
@@ -94,56 +101,7 @@ class SidebarWidget(QFrame):
         
         self.scroll.setWidget(self.scroll_content)
         self.sidebar_layout.addWidget(self.scroll)
-        
-        # --- Updated Queue Frame with Dropdown ---
-        self.queue_frame = QFrame()
-        self.queue_frame.setObjectName("QueueFrame")
-        self.queue_layout = QVBoxLayout(self.queue_frame)
-        self.queue_layout.setContentsMargins(6, 8, 6, 6)
-        self.queue_layout.setSpacing(6)
-
-        # Header Row: Title + Dropdown Combo
-        queue_header_layout = QHBoxLayout()
-        
-        self.queue_title = QLabel("<b>Production Queue</b>")
-        queue_header_layout.addWidget(self.queue_title)
-        
-        self.queue_dropdown = QComboBox()
-        self.queue_dropdown.setStyleSheet("""
-            QComboBox { 
-                font-size: 11px; 
-                padding: 2px 5px; 
-                min-width: 90px;
-                max-width: 120px;
-            }
-        """)
-        self.queue_dropdown.addItems(["Capture", "CV", "Sizing", "Cut"])
-        queue_header_layout.addWidget(self.queue_dropdown)
-        
-        # Add the header row to the main queue layout
-        self.queue_layout.addLayout(queue_header_layout)
-
-        # Create Stacked Widget to host the different list views
-        self.queue_stack = QStackedWidget()
-        
-        self.queue_capture_list = QListWidget()
-        self.queue_cv_list = QListWidget()
-        self.queue_sizing_list = QListWidget()
-        self.queue_cut_list = QListWidget()
-
-        # Add lists to the stack (index order matches the dropdown items array)
-        self.queue_stack.addWidget(self.queue_capture_list) # Index 0
-        self.queue_stack.addWidget(self.queue_cv_list)      # Index 1
-        self.queue_stack.addWidget(self.queue_sizing_list)  # Index 2
-        self.queue_stack.addWidget(self.queue_cut_list)     # Index 3
-
-        self.queue_layout.addWidget(self.queue_stack)
-        self.sidebar_layout.addWidget(self.queue_frame)
-        
-        # Connect the dropdown index changes to the stack controller
-        self.queue_dropdown.currentIndexChanged.connect(self.queue_stack.setCurrentIndex)
-        self.sidebar_layout.addWidget(self.queue_frame)
-        
+    
         # Event connections
         self.btn_toggle.clicked.connect(self.toggle_sidebar)
 
@@ -178,6 +136,7 @@ class SidebarWidget(QFrame):
             self.update_path_display(self.active_main_directory)
             self.batch_info_label.setToolTip(self.active_main_directory)
             self.known_orders.clear()
+            self.order_simple_status.clear()
             
             # Wipe UI clean for new batch folders
             for i in reversed(range(self.scroll_layout.count() - 1)): 
@@ -215,6 +174,10 @@ class SidebarWidget(QFrame):
                 except Exception:
                     continue  # Ignore brief cross-process conflicts
 
+            # Classify a simple status for filtering
+            simple_status = self._classify_payload_stage(payload)
+            self.order_simple_status[order_dir] = simple_status
+
             state_key = f"{payload.get('stage')}_{payload.get('current_item')}_{payload.get('total_items')}"
 
             if order_dir not in self.known_orders:
@@ -229,6 +192,9 @@ class SidebarWidget(QFrame):
                 if old_key != state_key:
                     widget_ref.update_state(payload)
                     self.known_orders[order_dir] = (widget_ref, state_key)
+
+        # Apply current filter after processing the list
+        self.apply_order_filter()
 
     def toggle_sidebar(self):
         current_width = self.width()
@@ -269,5 +235,29 @@ class SidebarWidget(QFrame):
                 with open(manifest_path, 'r') as f:
                     payload = json.load(f)
                     widget_ref.update_state(payload)
+                    # Update cached simple status and reapply filter
+                    self.order_simple_status[order_id] = self._classify_payload_stage(payload)
+                    self.apply_order_filter()
         except Exception:
             pass
+
+    def _classify_payload_stage(self, payload: dict) -> str:
+        """Return a simplified status used for filtering: 'In Queue', 'In Progress', or 'Completed'."""
+        stage = payload.get('stage', 'snapshot_pending')
+        if stage in ('snapshot_pending', 'retake'):
+            return 'In Queue'
+        if stage == 'completed':
+            return 'Completed'
+        return 'In Progress'
+
+    def apply_order_filter(self):
+        """Show/hide order widgets based on the selected filter."""
+        sel = self.order_filter_dropdown.currentText() if hasattr(self, 'order_filter_dropdown') else 'All'
+        for order_dir, (widget_ref, _) in self.known_orders.items():
+            status = self.order_simple_status.get(order_dir, 'In Queue')
+            if sel == 'All':
+                widget_ref.setVisible(True)
+            elif sel == 'In Progress':
+                widget_ref.setVisible(status == 'In Progress')
+            elif sel == 'In Queue':
+                widget_ref.setVisible(status == 'In Queue')
