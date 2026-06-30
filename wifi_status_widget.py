@@ -164,7 +164,7 @@ class WifiStatusWidget(QWidget):
                     self.showing_mismatch_tooltip = False
 
         except Exception as e:
-            print(f"{self.system_name} status error:", e)
+            # print(f"{self.system_name} status error:", e)
             self.set_online_status(False)
             self.set_connected_network("Offline")
             # Clear it if connection drops completely

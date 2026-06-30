@@ -4,6 +4,7 @@ import time
 import requests
 import subprocess
 from read_pc_ssid import read_pc_ssid
+from wifi_scan import force_wifi_scan
 
 class WifiProvisionManager(QObject):
     finished = pyqtSignal(bool)
@@ -230,7 +231,16 @@ class WifiProvisionManager(QObject):
 
     def scan_for_setup_ap(self):
         
+        print(">>> scan_for_setup_ap ENTERED")
+        
         while True:
+            
+            print("Forcing Windows Wi-Fi scan...")
+            force_wifi_scan()
+            print("Scan requested")
+
+            time.sleep(2)
+    
             result = subprocess.run(
                 ["netsh", "wlan", "show", "networks"],
                 capture_output=True,
