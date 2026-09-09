@@ -6,18 +6,28 @@
 
 WiFiManager wm;
 
-static bool lastState = HIGH;
+// buttons
+const int CONFIG_WIFI_PIN = 4; // button to configure wifi network by broadcasting the temporary access point
+static bool configWifiLastState = HIGH;
 
-const int TRIGGER_PIN = 4; // button to configure wifi network by broadcasting the temporary access point
+const int CREATE_ORDER_PIN = 22; // button to start create a directory for order and to take photo of order
+static bool createOrderLastState = HIGH;
+
+// tft display
 const int TFT_BL = 32;
 const int BL_CHANNEL = 0;
 const int BL_FREQ = 5000;
 const int BL_RESOLUTION = 8;
 
+// wifi related variables
 unsigned long wifiLostTime = 0;
 bool wifiLost = false;
 
 unsigned long lastReconnectAttempt = 0;
+unsigned long timeoutDuration = 60; // in seconds, time window to let user physically press the config wifi button in system
+
+bool portalRunning = false;
+unsigned long portalStartTime = 0;
 
 WebServer server(80);
 
@@ -35,17 +45,35 @@ void showConnectedScreen() {
     tft.drawString("Host: CAM-MASTER.local", 20, 180);
 }
 
-void showPortalScreen() {
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextColor(TFT_YELLOW);
-    tft.setTextSize(2);
-    tft.drawString("WiFi Setup Mode", 20, 20);
-    tft.setTextColor(TFT_WHITE);
-    tft.drawString("Connect to:", 20, 70);
-    tft.drawString("CAM_SETUP_AP", 20, 100);
-    tft.drawString("Password:", 20, 150);
-    tft.drawString("SST@2002", 20, 180);
-    tft.drawString("Open: 192.168.4.1", 20, 230);
+void showPortalScreen(int secondsLeft) {
+    // Only draw the background text once to prevent screen flickering
+    static bool basicScreenDrawn = false;
+    
+    if (!basicScreenDrawn) {
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_YELLOW);
+        tft.setTextSize(2);
+        tft.drawString("WiFi Setup Mode", 20, 20);
+        tft.setTextColor(TFT_WHITE);
+        tft.drawString("Connect to:", 20, 60);
+        tft.drawString("CAM_SETUP_AP", 20, 85);
+        tft.drawString("Password:", 20, 120);
+        tft.drawString("SST@2002", 20, 145);
+        tft.drawString("Open: 192.168.4.1", 20, 180);
+        basicScreenDrawn = true;
+    }
+
+    // Erase only the previous timer area using a black rectangle
+    tft.fillRect(20, 220, 280, 30, TFT_BLACK); 
+    
+    // Draw the active countdown
+    tft.setTextColor(TFT_RED);
+    tft.drawString("Timeout in: " + String(secondsLeft) + "s", 20, 220);
+
+    // Reset the static flag when time runs out or finishes so it can be drawn next time
+    if (secondsLeft <= 0) {
+        basicScreenDrawn = false;
+    }
 }
 
 void setup() {
@@ -62,9 +90,10 @@ void setup() {
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_WHITE);
     tft.setTextSize(2);
-    tft.drawString("CAM MASTER", 20, 20);
+    tft.drawString("CAM-MASTER", 20, 20);
 
-    pinMode(TRIGGER_PIN, INPUT_PULLUP);
+    pinMode(CONFIG_WIFI_PIN, INPUT_PULLUP);
+    pinMode(CREATE_ORDER_PIN, INPUT_PULLUP);
     
     // network hostname
     WiFi.setHostname("CAM-MASTER");
@@ -77,10 +106,15 @@ void setup() {
         ESP.restart();
     }
 
-    enterStationMode();
+    delay(1000);
 
-    Serial.print("Wi-Fi mode: ");
-    Serial.println(WiFi.getMode());
+    Serial.print("Connected SSID: ");
+    Serial.println(WiFi.SSID());
+
+    Serial.print("IP: ");
+    Serial.println(WiFi.localIP());
+
+    server.on("/status", handleStatus);
 
     startNetworkServices();
     showConnectedScreen();
@@ -91,23 +125,68 @@ void loop()
 {
     server.handleClient();
 
+    if (portalRunning)
+    {
+        wm.process();
+
+        static unsigned long lastScreenUpdate = 0;
+
+        if (millis() - lastScreenUpdate >= 1000)
+        {
+            lastScreenUpdate = millis();
+
+            int remaining = timeoutDuration - ((millis() - portalStartTime) / 1000);
+
+            if (remaining < 0)
+                remaining = 0;
+
+            showPortalScreen(remaining);
+        }
+
+        if (!wm.getConfigPortalActive())
+        {
+            Serial.println("Portal closed.");
+
+            portalRunning = false;
+
+            enterStationMode();
+
+            WiFi.begin();
+
+            unsigned long start = millis();
+
+            while (WiFi.status() != WL_CONNECTED &&
+                millis() - start < 15000)
+            {
+                delay(200);
+            }
+
+            startNetworkServices();
+
+            if (WiFi.status() == WL_CONNECTED)
+                showConnectedScreen();
+        }
+
+        return;
+    }
+
     // (1 = Not pressed, 0 = Pressed)
     static unsigned long lastDebugTime = 0;
     if (millis() - lastDebugTime > 500) {
         Serial.print("Button Pin State: ");
-        Serial.println(digitalRead(TRIGGER_PIN));
+        Serial.println(digitalRead(CONFIG_WIFI_PIN));
         lastDebugTime = millis();
     }
     
-    bool currentState = digitalRead(TRIGGER_PIN);
+    bool currentState = digitalRead(CONFIG_WIFI_PIN);
 
-    if (lastState == HIGH && currentState == LOW)
+    if (configWifiLastState == HIGH && currentState == LOW)
     {
         Serial.println("Button pressed once!");
         startSetupPortal();
     }
 
-    lastState = currentState;
+    configWifiLastState = currentState;
 
     // reconnect to saved wifi credentials
     if(WiFi.status() != WL_CONNECTED)
@@ -151,31 +230,25 @@ void loop()
 void startSetupPortal()
 {   
     Serial.println("Button pressed!");
-    Serial.println("Disconnecting from current Wi-Fi network...");
+    Serial.println("Opening configuration portal...");
 
     stopNetworkServices();
 
-    WiFi.disconnect(true);
+    WiFi.disconnect(false);
     delay(100);
+    
+    wm.setConfigPortalBlocking(false);
+    wm.setConfigPortalTimeout(timeoutDuration);
+    wm.setBreakAfterConfig(true);
 
-    showPortalScreen();
+    showPortalScreen(timeoutDuration);
 
     Serial.println("Starting AP Portal: CAM_SETUP_AP");
-    
-    bool result = wm.startConfigPortal("CAM_SETUP_AP", "SST@2002");
 
-    Serial.print("Result: ");
-    Serial.println(result);
+    wm.startConfigPortal("CAM_SETUP_AP", "SST@2002"); 
 
-    if (result){
-
-        enterStationMode();
-
-        startNetworkServices();
-        showConnectedScreen();
-        
-        Serial.println("Returned to STA mode");
-    }
+    portalRunning = true;
+    portalStartTime = millis();
 }
 
 void handleStatus() {
@@ -184,6 +257,15 @@ void handleStatus() {
     doc["connected"] = WiFi.status() == WL_CONNECTED;
     doc["ssid"] = WiFi.SSID();
     doc["ip"] = WiFi.localIP().toString();
+
+    if (WiFi.getMode() == WIFI_AP)
+        doc["mode"] = "portal";
+    else if (WiFi.getMode() == WIFI_STA)
+        doc["mode"] = "station";
+    else
+        doc["mode"] = "unknown";
+
+    doc["hostname"] = "CAM-MASTER";
 
     String response;
     serializeJson(doc, response);
@@ -194,16 +276,18 @@ void handleStatus() {
 void enterStationMode(){
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_STA);
-    Serial.println(WiFi.localIP());
+    delay(100);
+    Serial.println("Returned to STA mode");
 }
 
 void startNetworkServices(){
-    if (MDNS.begin("CAM-MASTER")){
-        Serial.println("mDNS started");
-    } else{
-        Serial.println("Failed to start mDNS");
+    if (WiFi.status() == WL_CONNECTED){
+        if (MDNS.begin("CAM-MASTER")){
+            Serial.println("mDNS started");
+        } else{
+            Serial.println("Failed to start mDNS");
+        }
     }
-    server.on("/status", handleStatus);
     server.begin();
 }
 

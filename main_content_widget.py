@@ -8,6 +8,9 @@ import subprocess
 import re
 from copy_string_widget import CopyStringWidget
 from wifi_status_widget import WifiStatusWidget
+from load_icon import load_icon
+from wifi_network_monitor import WifiNetworkMonitor
+from wifi_credential_manager import WifiCredentialManager
 
 # Define your pipeline array as a single source of truth
 PRODUCTION_STAGES = [
@@ -28,7 +31,7 @@ GLYPH_MAP = {
     7: "\ue86c"  # check_circle
 }
 
-# Device/icon glyphs (private use area glyphs from the Poppins TTF)
+# Device/icon glyphs (Material Symbols fallback). These will later be swapped to SVG files.
 GLYPH_CAMERA = "\ue438"
 GLYPH_PC = "\ue30c"
 GLYPH_CNC = "\ue131"
@@ -36,6 +39,18 @@ GLYPH_CNC = "\ue131"
 GLYPH_STATUS_CONNECTED = "\ue63e" 
 GLYPH_STATUS_DISCONNECTED = "\ue648"
 GLYPH_COPY = "\ue14d" # content_copy (Verify this hex matches your exact TTF font)
+
+# SVG-ready asset map for later migration away from private-use Unicode glyphs.
+ICON_ASSET_PATHS = {
+    "camera": "icons/linked_camera.svg", #linked_camera
+    "pc": "icons/desktop_windows.svg", #desktop_windows
+    "package_2": "icons/package_2.svg", 
+    "wifi": "icons/wifi.svg",
+    "lock": "icons/lock.svg",
+    "copy": "icons/content_copy.svg",
+    "network_ok": "icons/wifi.svg",
+    "network_warning": "icons/warning.svg",
+}
 
 # Unified directory manifest parsing lookup map
 STAGE_INDEX_MAP = {
@@ -61,11 +76,47 @@ class MainContentWidget(QWidget):
         self.sim_timer = QTimer(self)
         self.sim_timer.timeout.connect(self._advance_mock_pipeline)
         self.current_ssid = None
-        self.net_timer = QTimer(self)
-        self.net_timer.setInterval(3000)  # poll every 3s
-        self.net_timer.timeout.connect(self.refresh_network_status)
+
         self.init_ui()
-        self.net_timer.start()
+
+        # ============================================================
+        # Wi-Fi network monitor
+        # ============================================================
+
+        self.network_monitor = WifiNetworkMonitor(
+            setup_ssids=[
+                "CAM_SETUP_AP",
+                "CUTTER_SETUP_AP"
+            ]
+        )
+
+        self.network_monitor.network_changed.connect(
+            self.handle_network_changed
+        )
+
+        self.network_monitor.setup_ap_detected.connect(
+            self.handle_setup_ap_detected
+        )
+
+        # ============================================================
+        # ESP online/offline state → WLAN scanner control
+        # ============================================================
+
+        self.camera_widget.device_online_changed.connect(
+            lambda online: self.handle_device_online_changed(
+                "camera",
+                online
+            )
+        )
+
+        self.cnc_widget.device_online_changed.connect(
+            lambda online: self.handle_device_online_changed(
+                "cnc",
+                online
+            )
+        )
+
+        self.network_monitor.start()
 
     def init_ui(self):
         self.content_layout = QVBoxLayout(self)
@@ -88,7 +139,8 @@ class MainContentWidget(QWidget):
         credentials_layout.setVerticalSpacing(6)
 
         # Populate SSID Row
-        self.ssid_icon = QLabel("\ue63e")  # wifi icon
+        self.ssid_icon = QLabel()  # wifi icon
+        self.ssid_icon.setPixmap(load_icon(ICON_ASSET_PATHS["wifi"], size=14, color="#64748b"))
         self.ssid_icon.setStyleSheet("font-size: 14px; color: #64748b;")
         self.ssid_label = QLabel("SSID:")
         self.ssid_label.setStyleSheet("font-weight: bold; color: #475569; font-size: 12px")
@@ -101,7 +153,8 @@ class MainContentWidget(QWidget):
         credentials_layout.addWidget(self.ssid_detail, 0, 2)
 
         # Populate Password Row
-        self.pw_icon = QLabel("\ue73c")    # lock icon
+        self.pw_icon = QLabel() 
+        self.pw_icon.setPixmap(load_icon(ICON_ASSET_PATHS["lock"], size=14, color="#64748b"))
         self.pw_icon.setStyleSheet("font-size: 14px; color: #64748b;")
         self.pw_label = QLabel("Pass:")
         self.pw_label.setStyleSheet("font-weight: bold; color: #475569; font-size: 12px;")
@@ -131,7 +184,7 @@ class MainContentWidget(QWidget):
         # -- 1. Camera Node Badge --
         self.camera_widget = WifiStatusWidget(
         system_name="ORDER CAPTURE STATION",
-        glyph=GLYPH_CAMERA,
+        icon_path=ICON_ASSET_PATHS["camera"],
         temp_ssid="CAM_SETUP_AP", # set up via WiFiManager.autoConnect
         temp_pw="SST@2002", # set up via WiFiManager.autoConnect
         target_ssid=wifi_ssid,
@@ -148,7 +201,7 @@ class MainContentWidget(QWidget):
         # -- 2. PC Server Node Badge --
         self.pc_widget = WifiStatusWidget(
         system_name="PC",
-        glyph=GLYPH_PC,
+        icon_path=ICON_ASSET_PATHS["pc"],
         temp_ssid=None,
         temp_pw=None,
         target_ssid=wifi_ssid,
@@ -159,7 +212,7 @@ class MainContentWidget(QWidget):
         # -- 3. CNC Machine Node Badge --
         self.cnc_widget = WifiStatusWidget(
         system_name="BOX BLANK MAKER",
-        glyph=GLYPH_CNC,
+        icon_path=ICON_ASSET_PATHS["package_2"],
         temp_ssid="CUTTER_SETUP_AP", # set up via WiFiManager.autoConnect
         temp_pw="SST@2002", # set up via WiFiManager.autoConnect
         target_ssid=wifi_ssid,
@@ -260,11 +313,17 @@ class MainContentWidget(QWidget):
             or ssid.endswith("5G")
             or "5GHZ" in ssid
         )
-    
-    def refresh_network_status(self):
-        """Polls the system for Wi-Fi changes and updates the UI if anything changed."""
-        # --- 1. Keep your existing connection check logic ---
-        ssid = self.get_connected_ssid()
+
+    def handle_network_changed(self, ssid):
+        """Handle an actual Windows Wi-Fi/network change."""
+        print(f"Wi-Fi network changed: {ssid}")
+
+        self.refresh_network_status(ssid)
+        
+    def refresh_network_status(self, ssid=None):
+        """Update the UI using the current Wi-Fi SSID."""
+        if ssid is None:
+            ssid = self.get_connected_ssid()
         if ssid != self.current_ssid:
             self.current_ssid = ssid
             self.ssid_detail.update_text(
@@ -369,28 +428,15 @@ class MainContentWidget(QWidget):
         )
 
     def get_wifi_password(self, ssid):
-        """Get saved password for a Wi-Fi profile."""
-        try:
-            result = subprocess.check_output(
-                ["netsh", "wlan", "show", "profile", ssid, "key=clear"],
-                text=True,
-                encoding="utf-8",
-                errors="ignore"
-            )
+        """Get the password stored by Windows for a Wi-Fi profile."""
 
-            match = re.search(
-                r"Key Content\s*:\s(.+)",
-                result
-            )
+        password = WifiCredentialManager.get_password(ssid)
 
-            if match:
-                return match.group(1).strip()
-
-        except Exception as e:
-            print("Password Error:", e)
+        if password is not None:
+            return password
 
         return "Unavailable"
-    
+
     def get_visible_ssids(self):
         """Scan and return a list of all unique Wi-Fi SSIDs currently in range."""
         try:
@@ -412,7 +458,90 @@ class MainContentWidget(QWidget):
         except Exception as e:
             print("SSID Scan Error:", e)
             return []
-    
+
+    def handle_device_online_changed(
+        self,
+        system_name,
+        is_online
+    ):
+        print(
+            f"{system_name} device online state: "
+            f"{is_online}"
+        )
+
+        camera_online = getattr(
+            self.camera_widget,
+            "_device_online",
+            False
+        )
+
+        cnc_online = getattr(
+            self.cnc_widget,
+            "_device_online",
+            False
+        )
+
+        # --------------------------------------------------------
+        # If either ESP is offline, keep WLAN scanning enabled.
+        # --------------------------------------------------------
+
+        if not camera_online or not cnc_online:
+
+            print(
+                "At least one ESP is offline. "
+                "WLAN setup-AP scanning enabled."
+            )
+
+            self.network_monitor.start_scanning()
+
+        # --------------------------------------------------------
+        # Only stop scanning when BOTH ESPs are online.
+        # --------------------------------------------------------
+
+        else:
+
+            print(
+                "Both ESPs are online. "
+                "WLAN setup-AP scanning disabled."
+            )
+
+            self.network_monitor.stop_scanning()
+
+    def handle_setup_ap_detected(self, ssid):
+
+        print(
+            f"Setup AP detected by Wi-Fi monitor: {ssid}"
+        )
+
+        if ssid == "CAM_SETUP_AP" and getattr(
+            self.camera_widget,
+            "_setup_running",
+            False
+        ):
+            return
+
+        if ssid == "CUTTER_SETUP_AP" and getattr(
+            self.cnc_widget,
+            "_setup_running",
+            False
+        ):
+            return
+
+        # We found the AP, so stop requesting WLAN scans.
+        self.network_monitor.stop_scanning()
+
+        if ssid == "CAM_SETUP_AP":
+
+            self.camera_widget._setup_running = True
+
+            self.camera_widget.start_setup_overlay()
+
+        elif ssid == "CUTTER_SETUP_AP":
+
+            self.cnc_widget._setup_running = True
+
+            self.cnc_widget.start_setup_overlay()
+            
     def handle_stage_navigation(self, index):
         self.tab_stack.setCurrentIndex(index)
 
@@ -475,3 +604,9 @@ class MainContentWidget(QWidget):
                     self.order_state_updated.emit(self.current_order_id, manifest)
             except Exception:
                 pass
+
+    def closeEvent(self, a0):
+        if hasattr(self, "network_monitor"):
+            self.network_monitor.stop()
+
+        super().closeEvent(a0)

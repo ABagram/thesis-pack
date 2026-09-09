@@ -4,8 +4,21 @@ import json
 from PyQt6.QtCore import QPropertyAnimation, QEasingCurve, QTimer, Qt, pyqtSignal
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, 
                              QHBoxLayout, QVBoxLayout, QPushButton, 
-                             QLabel, QFrame, QScrollArea, QFileDialog, QTabWidget, QListWidget, QComboBox, QStackedWidget)
+                             QLabel, QFrame, QScrollArea, QFileDialog, QTabWidget, QListWidget, QComboBox, QStackedWidget, QScrollArea)
 from order_item_widget import OrderItemWidget
+from load_icon import load_icon
+
+ICON_ASSET_PATHS = {
+    "camera": "icons/linked_camera.svg",
+    "pc": "icons/desktop_windows.svg",
+    "cnc": "icons/cnc.svg",
+    "wifi": "icons/wifi.svg",
+    "lock": "icons/lock.svg",
+    "copy": "icons/content_copy.svg",
+    "network_ok": "icons/wifi.svg",
+    "network_warning": "icons/warning.svg",
+    "folder": "icons/folder.svg"
+}
 
 class SidebarWidget(QFrame):
     """Handles the collapsible pipeline sidebar, order list scanning, and batch selection."""
@@ -46,6 +59,10 @@ class SidebarWidget(QFrame):
         # Header Row (Title + Stretch Space + Button)
         header_row_layout = QHBoxLayout()
         header_row_layout.setSpacing(6)
+
+        self.folder_icon = QLabel() 
+        self.folder_icon.setPixmap(load_icon(ICON_ASSET_PATHS["folder"], size=14, color="#166534"))
+        self.folder_icon.setStyleSheet("font-size: 14px; color: #64748b;")
         
         self.batch_title_label = QLabel("<b>Active Batch</b>")
         self.batch_title_label.setObjectName("BatchTitle")
@@ -55,7 +72,8 @@ class SidebarWidget(QFrame):
         
         self.btn_set_active_batch = QPushButton("Change")
         self.btn_set_active_batch.clicked.connect(self.change_active_batch_directory)
-        
+
+        header_row_layout.addWidget(self.folder_icon)
         header_row_layout.addWidget(self.batch_title_label)
         header_row_layout.addWidget(self.batch_count_label)
         header_row_layout.addStretch()  # Pushes the change button all the way to the right
@@ -73,6 +91,10 @@ class SidebarWidget(QFrame):
         self.batch_info_layout.addLayout(header_row_layout)
         self.batch_info_layout.addWidget(self.batch_info_label)
         self.sidebar_layout.addWidget(self.batch_frame)
+
+        self.order_queue_label = QLabel("<b>Order Queue</b>")
+        self.order_queue_label.setStyleSheet("font-size: 12px; color: #181818;")
+        self.sidebar_layout.addWidget(self.order_queue_label)
         
         # Scroll Area for tracking child subdirectories
         # --- Order Filter Controls (All / In Progress / In Queue)
@@ -89,9 +111,9 @@ class SidebarWidget(QFrame):
         filter_row.addStretch()
         self.sidebar_layout.addLayout(filter_row)
 
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setStyleSheet("background: transparent; border: none;")
+        self.order_scroll_area = QScrollArea()
+        self.order_scroll_area.setWidgetResizable(True)
+        self.order_scroll_area.setStyleSheet("background: transparent; border: none;")
         
         self.scroll_content = QWidget()
         self.scroll_layout = QVBoxLayout(self.scroll_content)
@@ -99,8 +121,8 @@ class SidebarWidget(QFrame):
         self.scroll_layout.setSpacing(6)
         self.scroll_layout.addStretch()
         
-        self.scroll.setWidget(self.scroll_content)
-        self.sidebar_layout.addWidget(self.scroll)
+        self.order_scroll_area.setWidget(self.scroll_content)
+        self.sidebar_layout.addWidget(self.order_scroll_area)
     
         # Event connections
         self.btn_toggle.clicked.connect(self.toggle_sidebar)

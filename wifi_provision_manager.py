@@ -1,10 +1,8 @@
-from PyQt6.QtWidgets import QWidget, QFrame, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QToolTip
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QThread, QRect
+from PyQt6.QtCore import pyqtSignal, QObject
 import time
 import requests
 import subprocess
 from read_pc_ssid import read_pc_ssid
-from wifi_scan import force_wifi_scan
 
 class WifiProvisionManager(QObject):
     finished = pyqtSignal(bool)
@@ -163,12 +161,9 @@ class WifiProvisionManager(QObject):
             # STEP 1
             self.step_changed.emit(0)
 
-            print("Scanning for setup AP...")
-
-            if not self.scan_for_setup_ap():
-                raise Exception("Setup AP never appeared")
-
-            print("Found setup AP")
+            # The setup AP was already detected by
+            # WifiNetworkMonitor before this worker started.
+            print("Setup AP already detected")
 
             if not self.connect_to_wifi(
                 self.temp_ssid,
@@ -228,28 +223,3 @@ class WifiProvisionManager(QObject):
             print("Setup Error:", e)
 
         self.finished.emit(success)
-
-    def scan_for_setup_ap(self):
-        
-        print(">>> scan_for_setup_ap ENTERED")
-        
-        while True:
-            
-            print("Forcing Windows Wi-Fi scan...")
-            force_wifi_scan()
-            print("Scan requested")
-
-            time.sleep(2)
-    
-            result = subprocess.run(
-                ["netsh", "wlan", "show", "networks"],
-                capture_output=True,
-                text=True
-            )
-            
-            print("stdout: ", result.stdout)
-            print("stderr: ", result.stderr)
-            
-            if self.temp_ssid in result.stdout:
-                return True
-            time.sleep(1)

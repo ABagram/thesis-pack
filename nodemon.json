@@ -1,0 +1,5 @@
+{ 
+  "watch": ["."], 
+  "ext": "py", 
+  "exec": ".\\\\.venv\\\\Scripts\\\\python.exe main.py" 
+}

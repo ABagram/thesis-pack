@@ -2,27 +2,30 @@ from PyQt6.QtWidgets import QWidget, QFrame, QHBoxLayout, QVBoxLayout, QLabel, Q
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QThread, QRect
 from PyQt6.QtGui import QFont, QIcon, QPixmap
 from PyQt6 import sip
-import qtawesome, qtmdi
 import requests
 from load_icon import load_icon
 from read_pc_ssid import read_pc_ssid
 from wifi_setup_overlay import WifiSetupOverlay
-import subprocess
+from wifi_credential_manager import WifiCredentialManager
+from wifi_device_status_worker import WifiDeviceStatusWorker
 
 ICON_WARNING = "icons/warning.svg"
 ICON_OFFLINE = "icons/globe_2_cancel.svg"
 ICON_ONLINE = "icons/wifi.svg"
 
+STATUS_ICON_SIZE = 14
+
 class WifiStatusWidget(QWidget):
     # Signals to communicate back to your main window if needed
     connection_started = pyqtSignal(str)  # Emits system name
     connection_finished = pyqtSignal(str, bool)  # Emits system name and success status
+    device_online_changed = pyqtSignal(bool)
 
     def __init__(
         self,
         system_name: str,
-        glyph: str,
-        temp_ssid: str,
+        icon_path: str,
+        temp_ssid: str | None,
         temp_pw: str | None,
         target_ssid: str,
         target_pw: str,
@@ -37,7 +40,7 @@ class WifiStatusWidget(QWidget):
         self.showing_mismatch_tooltip = False
         
         self.system_name = system_name
-        self.glyph = glyph
+        self.icon_path = icon_path
         self.temp_ssid = temp_ssid
         self.temp_pw = temp_pw
         self.target_ssid = target_ssid
@@ -48,7 +51,10 @@ class WifiStatusWidget(QWidget):
         self.connected_network = None
 
         self.init_ui()
-        
+
+        if self.device_host:
+            self._setup_status_worker()
+
     def init_ui(self):
         
         root_layout = QVBoxLayout(self)
@@ -66,9 +72,17 @@ class WifiStatusWidget(QWidget):
         top_row = QHBoxLayout()
         top_row.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
-        self.icon_label = QLabel(self.glyph)
+        self.icon_label = QLabel()
         self.icon_label.setObjectName("SystemIcon")
-
+        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.icon_label.setPixmap(
+            load_icon(
+                self.icon_path,
+                size=14,
+                color="#64748b"
+            )
+        )
+    
         self.text_label = QLabel(
             self.system_name.title(),
             self.badge
@@ -83,11 +97,14 @@ class WifiStatusWidget(QWidget):
         
         self.connect_status = QLabel()
         self.connect_status.setFixedSize(20, 20)
-        self.connect_status.setPixmap(load_icon(ICON_OFFLINE, color="#DC2626"))
+        self.connect_status.setPixmap(
+    load_icon(ICON_OFFLINE, size=STATUS_ICON_SIZE, color="#DC2626")
+)
         self.connect_status.setObjectName("Connect_Status_Offline")
 
         self.ssid_label = QLabel("SSID:")
         self.ssid_label.setStyleSheet("""
+            font-size: 12px;
             text-align: left;
             padding: 0;
             border: none;
@@ -106,20 +123,6 @@ class WifiStatusWidget(QWidget):
     def poll_device_network(self):
         if not self.device_host:
             return
-
-        if self.temp_ssid and not hasattr(self, "_setup_running"):
-
-            result = subprocess.run(
-                ["netsh", "wlan", "show", "networks"],
-                capture_output=True,
-                text=True
-            )
-
-            if self.temp_ssid in result.stdout:
-                print("Setup AP detected immediately.")
-                self._setup_running = True
-                self.start_setup_overlay()
-                return
             
         try:
             response = requests.get(f"http://{self.device_host}.local/status", timeout=2)
@@ -129,7 +132,7 @@ class WifiStatusWidget(QWidget):
             esp_ssid = data.get("ssid", None)
             
             self.esp_ssid = esp_ssid
-            self.set_connected_network(esp_ssid)
+            self.set_connected_network(esp_ssid if esp_connected else None)
 
             pc_ssid = read_pc_ssid()
             is_valid_online = esp_connected and (pc_ssid == esp_ssid)
@@ -138,7 +141,9 @@ class WifiStatusWidget(QWidget):
             # --- PERSISTENT TOOLTIP LOGIC ---
             if pc_ssid is not None and esp_ssid is not None and pc_ssid != esp_ssid:
                 print(f"SSID mismatch: PC='{pc_ssid}' {self.device_host}='{esp_ssid}'")
-                self.connect_status.setPixmap(load_icon(ICON_WARNING, color="#f45900"))
+                self.connect_status.setPixmap(
+    load_icon(ICON_WARNING, size=STATUS_ICON_SIZE, color="#f45900")
+)
                 self.network_label.setText(f"{esp_ssid} (Mismatch)")
 
                 # If we haven't shown it yet, spawn the persistent tooltip
@@ -166,7 +171,7 @@ class WifiStatusWidget(QWidget):
         except Exception as e:
             # print(f"{self.system_name} status error:", e)
             self.set_online_status(False)
-            self.set_connected_network("Offline")
+            self.set_connected_network(None)
             # Clear it if connection drops completely
             if self.showing_mismatch_tooltip:
                 QToolTip.hideText()
@@ -179,11 +184,151 @@ class WifiStatusWidget(QWidget):
             self.network_label.setText(
                 ssid or "Disconnected"
             )
+
+    def _handle_device_status(
+        self,
+        esp_connected,
+        esp_ssid
+    ):
+
+        self.esp_ssid = esp_ssid
+
+        self.set_connected_network(
+            esp_ssid if esp_connected else None
+        )
+
+        pc_ssid = read_pc_ssid()
+
+        is_valid_online = (
+            esp_connected
+            and pc_ssid == esp_ssid
+        )
+
+        self.set_online_status(
+            is_valid_online
+        )
+
+        if (
+            pc_ssid is not None
+            and esp_ssid is not None
+            and pc_ssid != esp_ssid
+        ):
+
+            print(
+                f"SSID mismatch: "
+                f"PC='{pc_ssid}' "
+                f"{self.device_host}='{esp_ssid}'"
+            )
+
+            self.connect_status.setPixmap(
+                load_icon(
+                    ICON_WARNING,
+                    size=STATUS_ICON_SIZE,
+                    color="#f45900"
+                )
+            )
+
+            self.network_label.setText(
+                f"{esp_ssid} (Mismatch)"
+            )
+
+            if not self.showing_mismatch_tooltip:
+
+                global_pos = (
+                    self.network_label.mapToGlobal(
+                        self.network_label.rect().bottomLeft()
+                    )
+                )
+
+                global_pos.setY(
+                    global_pos.y() + 5
+                )
+
+                warning_msg = (
+                    f"⚠️ <b>SSID Mismatch Detected!</b><br>"
+                    f"Your PC is on: <b>{pc_ssid}</b><br>"
+                    f"Device is on: <b>{esp_ssid}</b><br><br>"
+                    f"Please switch your PC network to match."
+                )
+
+                QToolTip.showText(
+                    global_pos,
+                    warning_msg,
+                    self.network_label,
+                    QRect(),
+                    5
+                )
+
+                self.showing_mismatch_tooltip = True
+
+        else:
+
+            if self.showing_mismatch_tooltip:
+
+                QToolTip.hideText()
+
+                self.showing_mismatch_tooltip = False
+                
+    def _setup_status_worker(self):
+
+        self.network_poll_thread = QThread(self)
+
+        self.network_poll_worker = WifiDeviceStatusWorker(
+            self.device_host
+        )
+
+        self.network_poll_worker.moveToThread(
+            self.network_poll_thread
+        )
+
+        self.network_poll_worker.status_result.connect(
+            self._handle_device_status
+        )
+
+        self.network_poll_thread.start()
+
+        self.network_poll_timer = QTimer(self)
+
+        self.network_poll_timer.timeout.connect(
+            self._request_status_poll
+        )
+
+        self.network_poll_timer.start(500)
+
+        # Perform the first check immediately.
+        QTimer.singleShot(
+            0,
+            self._request_status_poll
+        )
+
+    def _request_status_poll(self):
+
+        if not self.network_poll_thread.isRunning():
+            return
+
+        self.network_poll_worker.poll_requested.emit()
         
     def set_online_status(self, is_online: bool):
-        """Updates the status badge color and glyph"""
+        """Updates the status badge and notifies the main window
+        when the ESP online/offline state changes.
+        """
 
-        # Prevent crashes if QLabel was deleted
+        # --------------------------------------------------------
+        # Track the previous state.
+        # --------------------------------------------------------
+
+        previous_status = getattr(
+            self,
+            "_device_online",
+            None
+        )
+
+        self._device_online = is_online
+
+        # --------------------------------------------------------
+        # Update visual status.
+        # --------------------------------------------------------
+
         if not hasattr(self, "connect_status"):
             return
 
@@ -191,24 +336,98 @@ class WifiStatusWidget(QWidget):
             return
 
         if is_online:
-            self.connect_status.setPixmap(load_icon(ICON_ONLINE, color="#16A34A"))
-            self.connect_status.setObjectName("Connect_Status_Online")
+
+            self.connect_status.setPixmap(
+                load_icon(
+                    ICON_ONLINE,
+                    size=STATUS_ICON_SIZE,
+                    color="#16A34A"
+                )
+            )
+
+            self.connect_status.setObjectName(
+                "Connect_Status_Online"
+            )
+
         else:
-            self.connect_status.setPixmap(load_icon(ICON_OFFLINE, color="#DC2626"))
-            self.connect_status.setObjectName("Connect_Status_Offline")
+
+            self.connect_status.setPixmap(
+                load_icon(
+                    ICON_OFFLINE,
+                    size=STATUS_ICON_SIZE,
+                    color="#DC2626"
+                )
+            )
+
+            self.connect_status.setObjectName(
+                "Connect_Status_Offline"
+            )
+
+        # --------------------------------------------------------
+        # Tell MainContentWidget only when the state actually
+        # changes.
+        #
+        # This prevents repeated calls to poll_device_network()
+        # from repeatedly starting/stopping the WLAN scanner.
+        # --------------------------------------------------------
+
+        if previous_status != is_online:
+
+            print(
+                f"{self.system_name} online state changed: "
+                f"{previous_status} -> {is_online}"
+            )
+
+            self.device_online_changed.emit(
+                is_online
+            )
             
     def start_setup_overlay(self):
         print("Opening WifiSetupOverlay")
-        # Find top level main window to apply overlay to
+
+        # --------------------------------------------------------
+        # Capture the PC's current network BEFORE we switch it
+        # to the ESP setup network.
+        # --------------------------------------------------------
+
+        target_ssid = read_pc_ssid()
+
+        if not target_ssid or target_ssid == "No Wi-Fi":
+            print("Cannot start Wi-Fi setup: PC is not connected.")
+            return
+
+        target_pw = WifiCredentialManager.get_password(target_ssid)
+
+        if target_pw is None:
+            print(
+                f"Cannot start Wi-Fi setup: "
+                f"password for '{target_ssid}' is unavailable."
+            )
+            return
+
+        # --------------------------------------------------------
+        # This is our credential snapshot.
+        #
+        # From this point onward, provisioning should use these
+        # values even after the PC switches to the ESP setup AP.
+        # --------------------------------------------------------
+
+        print(
+            f"Captured target Wi-Fi network: {target_ssid}"
+        )
+
         self.overlay = WifiSetupOverlay(
             system_name=self.system_name,
             temp_ssid=self.temp_ssid,
-            temp_pw = self.temp_pw,
-            target_ssid=self.target_ssid,
-            target_pw=self.target_pw
+            temp_pw=self.temp_pw,
+            target_ssid=target_ssid,
+            target_pw=target_pw
         )
-        # Connect to overlay finish event to flip icon colors
-        self.overlay.setup_completed.connect(self.handle_setup_success)
+
+        self.overlay.setup_completed.connect(
+            self.handle_setup_success
+        )
+
         self.overlay.show()
 
     def handle_setup_success(self, success: bool):
@@ -216,11 +435,6 @@ class WifiStatusWidget(QWidget):
         self._setup_running = False
         
         self.set_online_status(success)
-        # If setup succeeded once, switch the button into force-reset mode
-        if success:
-            try:
-                self.enable_force_reset(True)
-            except Exception:
-                pass
-
+        
         self.connection_finished.emit(self.system_name, success)
+    

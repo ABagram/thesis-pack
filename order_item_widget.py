@@ -4,10 +4,15 @@ import json
 from datetime import datetime
 from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QPushButton, 
                              QLabel, QFrame, QMessageBox)
-from PyQt6.QtCore import Qt, QPoint
-from PyQt6.QtGui import QPainter, QPen, QColor
+from PyQt6.QtCore import Qt, QPoint, QSize
+from PyQt6.QtGui import QPainter, QPen, QColor, QIcon
 from pathlib import Path
 from datetime import datetime
+from load_icon import load_icon
+
+ICON_ASSET_PATHS = {
+    "cancel": "icons/cancel.svg"
+}
 
 class OrderItemWidget(QPushButton):
     """A sleek, minimized order widget with an integrated horizontal canvas pipeline tracker."""
@@ -59,8 +64,18 @@ class OrderItemWidget(QPushButton):
         self.badge_text = QLabel("")
         self.badge_text.hide()
         
-        self.delete_button = QPushButton("delete_forever", self) 
+        self.delete_button = QPushButton(self)
         self.delete_button.setObjectName("WidgetDeleteButton")
+        self.delete_button.setIcon(
+            QIcon(
+                load_icon(
+                    ICON_ASSET_PATHS["cancel"],
+                    size=18,
+                    color="#64748b"
+                )
+            )
+        )
+        self.delete_button.setIconSize(QSize(18, 18))
         self.delete_button.setToolTip("Delete Order Permanently")
         self.delete_button.setFixedSize(28, 28)
         self.delete_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -117,9 +132,6 @@ class OrderItemWidget(QPushButton):
             QPushButton#WidgetDeleteButton {
                 background-color: transparent;
                 border: none;
-                font-family: "Material Symbols Rounded";
-                font-size: 18px; 
-                color: #64748b;
                 text-align: center;
             }
             QPushButton#WidgetDeleteButton:hover {

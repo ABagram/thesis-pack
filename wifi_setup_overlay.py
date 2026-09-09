@@ -2,6 +2,7 @@ from PyQt6.QtWidgets import QWidget, QFrame, QHBoxLayout, QVBoxLayout, QLabel, Q
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QThread, QRect
 from PyQt6.QtGui import QFont, QIcon, QPixmap
 from PyQt6 import sip
+from typing import Any, cast
 import qtawesome, qtmdi
 import requests, time
 from load_icon import load_icon
@@ -59,32 +60,37 @@ class WifiSetupOverlay(QWidget):
         self.init_ui()
         
         # Set up thread architecture safely
-        self.thread = QThread()
+        self.provision_thread = QThread()
         self.worker = WifiProvisionManager(
             self.temp_ssid, self.temp_pw, self.target_ssid, self.target_pw
         )
-        self.worker.moveToThread(self.thread)
+        self.worker.moveToThread(self.provision_thread)
         
         # Hook up asynchronous signals
-        self.thread.started.connect(self.worker.run)
+        self.provision_thread.started.connect(self.worker.run)
         
         self.worker.step_changed.connect(self.update_step)
         self.worker.finished.connect(self.handle_worker_finished)
         
         # Cleanup links to prevent memory leaks
-        self.worker.finished.connect(self.thread.quit)
+        self.worker.finished.connect(self.provision_thread.quit)
         self.worker.finished.connect(self.worker.deleteLater)
-        self.thread.finished.connect(self.thread.deleteLater)
+        self.provision_thread.finished.connect(self.provision_thread.deleteLater)
         
         # Start execution flow safely off-thread after a short ui stabilization frame
         print("Starting thread...")
-        QTimer.singleShot(300, self.thread.start)
+        QTimer.singleShot(300, self.provision_thread.start)
 
     def init_ui(self):
         # Fill whole parent viewport
-        if self.parentWidget():
-            self.setFixedWidth(self.parentWidget().width())
-            self.move(0,self.parentWidget().badge.height())
+        parent = self.parentWidget()
+        if parent is not None:
+            self.setFixedWidth(parent.width())
+            # ``badge`` is supplied by the overlay's parent widget, rather
+            # than being part of QWidget's public interface.
+            badge = getattr(cast(Any, parent), "badge", None)
+            badge_height = badge.height() if badge is not None else 0
+            self.move(0, badge_height)
                                 
         self.setStyleSheet("background-color: rgba(15, 23, 42, 0.85);") # Tailwind slate-900 transparent fallback
         
