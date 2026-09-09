@@ -11,6 +11,7 @@ from wifi_status_widget import WifiStatusWidget
 from load_icon import load_icon
 from wifi_network_monitor import WifiNetworkMonitor
 from wifi_credential_manager import WifiCredentialManager
+from wifi_udp_listener import WifiUdpListener
 
 # Define your pipeline array as a single source of truth
 PRODUCTION_STAGES = [
@@ -97,6 +98,13 @@ class MainContentWidget(QWidget):
         self.network_monitor.setup_ap_detected.connect(
             self.handle_setup_ap_detected
         )
+
+        self.udp_listener = WifiUdpListener()
+        self.udp_listener.status_received.connect(
+            self.handle_udp_status
+        )
+
+        self.network_monitor.start_scanning()
 
         # ============================================================
         # ESP online/offline state → WLAN scanner control
@@ -190,6 +198,7 @@ class MainContentWidget(QWidget):
         target_ssid=wifi_ssid,
         target_pw=wifi_pw,
         device_host="CAM-MASTER",
+        udp_device_id="camera",
         disabled_tooltip=(
             "Camera captive portal "
             "setup broadcast cannot "
@@ -218,6 +227,7 @@ class MainContentWidget(QWidget):
         target_ssid=wifi_ssid,
         target_pw=wifi_pw,
         device_host="CUTTER-MASTER",  # change to real IP
+        udp_device_id="cnc",
     )
         status_strip_layout.addWidget(self.cnc_widget)
 
@@ -400,8 +410,6 @@ class MainContentWidget(QWidget):
         # --- 3. Scan nearby SSIDs to dynamically enable/disable the "Setup" buttons ---
         visible_ssids = self.get_visible_ssids()
         
-        if hasattr(self, 'camera_widget'):
-            self.camera_widget.poll_device_network()
         if hasattr(self, 'pc_widget'):
             self.pc_widget.set_online_status(
                 ssid != "No Wi-Fi"
@@ -410,11 +418,6 @@ class MainContentWidget(QWidget):
             self.pc_widget.set_connected_network(
                 ssid
             )
-            self.pc_widget.poll_device_network()
-            
-        if hasattr(self, 'cnc_widget'):
-            self.cnc_widget.poll_device_network()
-            
         pc_online = (
             ssid != "No Wi-Fi"
         )
@@ -425,6 +428,24 @@ class MainContentWidget(QWidget):
 
         self.pc_widget.set_connected_network(
             ssid
+        )
+
+    def handle_udp_status(self, device_id, is_connected, esp_ssid):
+        pc_ssid = self.current_ssid
+        if pc_ssid is None:
+            pc_ssid = self.get_connected_ssid()
+
+        self.camera_widget.handle_udp_status(
+            device_id,
+            is_connected,
+            esp_ssid,
+            pc_ssid
+        )
+        self.cnc_widget.handle_udp_status(
+            device_id,
+            is_connected,
+            esp_ssid,
+            pc_ssid
         )
 
     def get_wifi_password(self, ssid):

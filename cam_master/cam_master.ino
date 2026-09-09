@@ -1,6 +1,7 @@
 #include <WiFiManager.h>
 #include <ESPmDNS.h>
 #include <WebServer.h>
+#include <WiFiUdp.h>
 #include <ArduinoJson.h>
 #include <TFT_eSPI.h>
 
@@ -30,6 +31,10 @@ bool portalRunning = false;
 unsigned long portalStartTime = 0;
 
 WebServer server(80);
+WiFiUDP statusUdp;
+const uint16_t STATUS_UDP_PORT = 4210;
+const unsigned long STATUS_BROADCAST_INTERVAL = 2500;
+unsigned long lastStatusBroadcast = 0;
 
 TFT_eSPI tft = TFT_eSPI();
 
@@ -116,6 +121,7 @@ void setup() {
 
     server.on("/status", handleStatus);
 
+    statusUdp.begin(STATUS_UDP_PORT);
     startNetworkServices();
     showConnectedScreen();
 
@@ -124,6 +130,7 @@ void setup() {
 void loop()
 {
     server.handleClient();
+    broadcastStatus();
 
     if (portalRunning)
     {
@@ -271,6 +278,33 @@ void handleStatus() {
     serializeJson(doc, response);
 
     server.send(200, "application/json", response);
+}
+
+void broadcastStatus() {
+    unsigned long now = millis();
+
+    if (now - lastStatusBroadcast < STATUS_BROADCAST_INTERVAL)
+        return;
+
+    lastStatusBroadcast = now;
+
+    DynamicJsonDocument doc(256);
+    bool connected = WiFi.status() == WL_CONNECTED;
+
+    doc["device"] = "camera";
+    doc["connected"] = connected;
+    doc["ssid"] = connected ? WiFi.SSID() : "";
+    doc["ip"] = connected
+        ? WiFi.localIP().toString()
+        : WiFi.softAPIP().toString();
+    doc["mode"] = WiFi.getMode() == WIFI_AP ? "portal" : "station";
+
+    String payload;
+    serializeJson(doc, payload);
+
+    statusUdp.beginPacket(IPAddress(255, 255, 255, 255), STATUS_UDP_PORT);
+    statusUdp.print(payload);
+    statusUdp.endPacket();
 }
 
 void enterStationMode(){

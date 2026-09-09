@@ -1,13 +1,11 @@
 from PyQt6.QtWidgets import QWidget, QFrame, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QToolTip
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QThread, QRect
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QRect
 from PyQt6.QtGui import QFont, QIcon, QPixmap
 from PyQt6 import sip
-import requests
 from load_icon import load_icon
 from read_pc_ssid import read_pc_ssid
 from wifi_setup_overlay import WifiSetupOverlay
 from wifi_credential_manager import WifiCredentialManager
-from wifi_device_status_worker import WifiDeviceStatusWorker
 
 ICON_WARNING = "icons/warning.svg"
 ICON_OFFLINE = "icons/globe_2_cancel.svg"
@@ -33,6 +31,7 @@ class WifiStatusWidget(QWidget):
             "Target setup network not detected."
         ),
         device_host=None,
+        udp_device_id: str | None = None,
         parent=None
     ):
         super().__init__(parent)
@@ -47,13 +46,14 @@ class WifiStatusWidget(QWidget):
         self.target_pw = target_pw
         self.disabled_tooltip = disabled_tooltip
         self.device_host = (device_host)
+        self.udp_device_id = udp_device_id
         
         self.connected_network = None
 
         self.init_ui()
 
-        if self.device_host:
-            self._setup_status_worker()
+        if self.udp_device_id:
+            self._setup_udp_watchdog()
 
     def init_ui(self):
         
@@ -120,63 +120,6 @@ class WifiStatusWidget(QWidget):
         badge_layout.addLayout(top_row)
         badge_layout.addLayout(bottom_row)
 
-    def poll_device_network(self):
-        if not self.device_host:
-            return
-            
-        try:
-            response = requests.get(f"http://{self.device_host}.local/status", timeout=2)
-            data = response.json()
-            
-            esp_connected = data.get("connected", False)
-            esp_ssid = data.get("ssid", None)
-            
-            self.esp_ssid = esp_ssid
-            self.set_connected_network(esp_ssid if esp_connected else None)
-
-            pc_ssid = read_pc_ssid()
-            is_valid_online = esp_connected and (pc_ssid == esp_ssid)
-            self.set_online_status(is_valid_online)
-
-            # --- PERSISTENT TOOLTIP LOGIC ---
-            if pc_ssid is not None and esp_ssid is not None and pc_ssid != esp_ssid:
-                print(f"SSID mismatch: PC='{pc_ssid}' {self.device_host}='{esp_ssid}'")
-                self.connect_status.setPixmap(
-    load_icon(ICON_WARNING, size=STATUS_ICON_SIZE, color="#f45900")
-)
-                self.network_label.setText(f"{esp_ssid} (Mismatch)")
-
-                # If we haven't shown it yet, spawn the persistent tooltip
-                if not self.showing_mismatch_tooltip:
-                    # Map the tooltip location right underneath the network label
-                    global_pos = self.network_label.mapToGlobal(self.network_label.rect().bottomLeft())
-                    global_pos.setY(global_pos.y() + 5)
-                    
-                    warning_msg = (
-                        f"⚠️ <b>SSID Mismatch Detected!</b><br>"
-                        f"Your PC is on: <b>{pc_ssid}</b><br>"
-                        f"Device is on: <b>{esp_ssid}</b><br><br>"
-                        f"Please switch your PC network to match."
-                    )
-                    
-                    # Passing 0 as the third argument tells Qt to keep it open indefinitely
-                    QToolTip.showText(global_pos, warning_msg, self.network_label, QRect(), 5)
-                    self.showing_mismatch_tooltip = True
-            else:
-                # If they match now, or went totally offline, clear the persistent tooltip instantly
-                if self.showing_mismatch_tooltip:
-                    QToolTip.hideText()
-                    self.showing_mismatch_tooltip = False
-
-        except Exception as e:
-            # print(f"{self.system_name} status error:", e)
-            self.set_online_status(False)
-            self.set_connected_network(None)
-            # Clear it if connection drops completely
-            if self.showing_mismatch_tooltip:
-                QToolTip.hideText()
-                self.showing_mismatch_tooltip = False
-                
     def set_connected_network(self, ssid):
         self.connected_network = ssid
 
@@ -188,7 +131,8 @@ class WifiStatusWidget(QWidget):
     def _handle_device_status(
         self,
         esp_connected,
-        esp_ssid
+        esp_ssid,
+        pc_ssid=None
     ):
 
         self.esp_ssid = esp_ssid
@@ -197,7 +141,8 @@ class WifiStatusWidget(QWidget):
             esp_ssid if esp_connected else None
         )
 
-        pc_ssid = read_pc_ssid()
+        if pc_ssid is None:
+            pc_ssid = read_pc_ssid()
 
         is_valid_online = (
             esp_connected
@@ -269,44 +214,34 @@ class WifiStatusWidget(QWidget):
 
                 self.showing_mismatch_tooltip = False
                 
-    def _setup_status_worker(self):
-
-        self.network_poll_thread = QThread(self)
-
-        self.network_poll_worker = WifiDeviceStatusWorker(
-            self.device_host
+    def _setup_udp_watchdog(self):
+        self.udp_watchdog_timer = QTimer(self)
+        self.udp_watchdog_timer.setSingleShot(True)
+        self.udp_watchdog_timer.timeout.connect(
+            self._handle_udp_timeout
         )
+        self.udp_watchdog_timer.start(6000)
 
-        self.network_poll_worker.moveToThread(
-            self.network_poll_thread
-        )
-
-        self.network_poll_worker.status_result.connect(
-            self._handle_device_status
-        )
-
-        self.network_poll_thread.start()
-
-        self.network_poll_timer = QTimer(self)
-
-        self.network_poll_timer.timeout.connect(
-            self._request_status_poll
-        )
-
-        self.network_poll_timer.start(500)
-
-        # Perform the first check immediately.
-        QTimer.singleShot(
-            0,
-            self._request_status_poll
-        )
-
-    def _request_status_poll(self):
-
-        if not self.network_poll_thread.isRunning():
+    def handle_udp_status(
+        self,
+        device_id,
+        esp_connected,
+        esp_ssid,
+        pc_ssid=None
+    ):
+        if device_id != self.udp_device_id:
             return
 
-        self.network_poll_worker.poll_requested.emit()
+        self.udp_watchdog_timer.start(6000)
+        self._handle_device_status(
+            esp_connected,
+            esp_ssid,
+            pc_ssid
+        )
+
+    def _handle_udp_timeout(self):
+        self._handle_device_status(False, None)
+        self.udp_watchdog_timer.start(6000)
         
     def set_online_status(self, is_online: bool):
         """Updates the status badge and notifies the main window
