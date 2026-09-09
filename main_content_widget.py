@@ -338,10 +338,6 @@ class MainContentWidget(QWidget):
             self.cnc_widget.target_ssid = ssid
             self.cnc_widget.target_pw = pw
 
-        status_text = "Online" if ssid != "No Wi-Fi" else "Offline"
-        if hasattr(self, 'wifi_status'):
-            self.wifi_status.setText(f"Status: {status_text}")
-
         # --- 3. Scan nearby SSIDs to dynamically enable/disable the "Setup" buttons ---
         visible_ssids = self.get_visible_ssids()
         
