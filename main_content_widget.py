@@ -1,8 +1,10 @@
 import os
 import json
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSize
+from PyQt6.QtCore import QPoint, QRect
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QLabel, QFrame, QStackedWidget
 from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QPainter, QColor, QPolygon
 from pipeline_stepper import PipelineStepperWidget
 import subprocess
 import re
@@ -65,6 +67,47 @@ STAGE_INDEX_MAP = {
     "completed": 7
 }
 
+
+class WifiBandTooltip(QWidget):
+    def __init__(self, text, parent=None):
+        super().__init__(parent)
+
+        self.setWindowFlags(
+            Qt.WindowType.ToolTip
+            | Qt.WindowType.FramelessWindowHint
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setMaximumWidth(300)
+        label.setStyleSheet(
+            "color: #ffffff; font-size: 12px; background: transparent;"
+        )
+        layout.addWidget(label)
+        self.adjustSize()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(QColor("#991b1b"))
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        body_rect = self.rect().adjusted(0, 8, 0, 0)
+        painter.drawRoundedRect(body_rect, 8, 8)
+
+        center_x = self.width() // 2
+        arrow = QPolygon([
+            QPoint(center_x - 8, 8),
+            QPoint(center_x, 0),
+            QPoint(center_x + 8, 8),
+        ])
+        painter.drawPolygon(arrow)
+        painter.end()
+
 class MainContentWidget(QWidget):
     hardware_trigger_clicked = pyqtSignal()
     order_state_updated = pyqtSignal(str, dict)  # (order_id, state_data)
@@ -74,6 +117,10 @@ class MainContentWidget(QWidget):
         self.mock_progress_index = 0
         self.current_order_id = None
         self.current_order_directory = None
+        self.wifi_warning_toast = None
+        self.current_wifi_is_5ghz = False
+        self.current_wifi_band = "Unknown"
+        self.wifi_band_tooltip = None
         self.sim_timer = QTimer(self)
         self.sim_timer.timeout.connect(self._advance_mock_pipeline)
         self.current_ssid = None
@@ -155,10 +202,15 @@ class MainContentWidget(QWidget):
         
         wifi_ssid = self.get_connected_ssid()
         self.ssid_detail = CopyStringWidget(wifi_ssid)
+        self.wifi_band_badge = QLabel("Unknown")
+        self.wifi_band_badge.setObjectName("WifiBandBadge")
+        self.wifi_band_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.wifi_band_badge.setFixedHeight(24)
 
         credentials_layout.addWidget(self.ssid_icon, 0, 0)
         credentials_layout.addWidget(self.ssid_label, 0, 1)
         credentials_layout.addWidget(self.ssid_detail, 0, 2)
+        credentials_layout.addWidget(self.wifi_band_badge, 0, 3)
 
         # Populate Password Row
         self.pw_icon = QLabel() 
@@ -230,6 +282,12 @@ class MainContentWidget(QWidget):
         udp_device_id="cnc",
     )
         status_strip_layout.addWidget(self.cnc_widget)
+
+        self.update_wifi_band()
+
+        self.wifi_band_timer = QTimer(self)
+        self.wifi_band_timer.timeout.connect(self.update_wifi_band)
+        self.wifi_band_timer.start(3000)
 
         # Mount the finished hardware monitoring strip into the ribbon
         network_main_layout.addWidget(status_strip_widget)
@@ -309,20 +367,144 @@ class MainContentWidget(QWidget):
 
         return "No Wi-Fi"
 
-    def is_5ghz_network(
-        self,
-        ssid
-    ):
-        if not ssid:
-            return False
+    def get_connected_wifi_channel(self):
+        """Return the connected WLAN channel reported by Windows."""
+        try:
+            result = subprocess.check_output(
+                ["netsh", "wlan", "show", "interfaces"],
+                text=True,
+                encoding="utf-8",
+                errors="ignore"
+            )
 
-        ssid = ssid.upper()
+            match = re.search(
+                r"^\s*Channel\s*:\s*(\d+)",
+                result,
+                re.MULTILINE
+            )
+            return int(match.group(1)) if match else None
 
-        return (
-            "_5G" in ssid
-            or ssid.endswith("5G")
-            or "5GHZ" in ssid
+        except (OSError, ValueError):
+            return None
+
+    def get_connected_wifi_band(self):
+        channel = self.get_connected_wifi_channel()
+        if channel is None:
+            return "Unknown"
+        if 1 <= channel <= 14:
+            return "2.4 GHz"
+        if channel >= 36:
+            return "5 GHz"
+        return "Other"
+
+    def is_5ghz_network(self, ssid=None):
+        """Determine the connected band from its WLAN channel, not its SSID."""
+        return self.get_connected_wifi_band() == "5 GHz"
+
+    def get_available_24ghz_ssids(self):
+        """Return nearby SSIDs advertising at least one 2.4 GHz channel."""
+        try:
+            result = subprocess.check_output(
+                ["netsh", "wlan", "show", "networks", "mode=bssid"],
+                text=True,
+                encoding="utf-8",
+                errors="ignore"
+            )
+        except OSError:
+            return []
+
+        networks = []
+        blocks = re.split(
+            r"(?=^\s*SSID\s+\d+\s*:)",
+            result,
+            flags=re.MULTILINE
         )
+
+        for block in blocks:
+            ssid_match = re.search(
+                r"^\s*SSID\s+\d+\s*:\s*(.*)$",
+                block,
+                re.MULTILINE
+            )
+            if not ssid_match:
+                continue
+
+            network_ssid = ssid_match.group(1).strip()
+            if not network_ssid or network_ssid == "<Hidden Network>":
+                continue
+
+            channels = re.findall(
+                r"^\s*Channel\s*:\s*(\d+)",
+                block,
+                re.MULTILINE
+            )
+            if any(1 <= int(channel) <= 14 for channel in channels):
+                networks.append(network_ssid)
+
+        return list(dict.fromkeys(networks))
+
+    def show_wifi_band_tooltip(self, band):
+        if self.wifi_band_tooltip is not None:
+            return
+
+        if band == "5 GHz":
+            text = (
+                "This network is 5 GHz. Switch to a 2.4 GHz Wi-Fi "
+                "network for the ESP devices."
+            )
+        else:
+            text = (
+                "The current Wi-Fi band could not be used by the ESP "
+                "devices. Switch to a 2.4 GHz Wi-Fi network."
+            )
+
+        self.wifi_band_tooltip = WifiBandTooltip(text)
+        self.wifi_band_tooltip.adjustSize()
+
+        anchor = self.pc_widget.mapToGlobal(
+            self.pc_widget.rect().center()
+        )
+        x = anchor.x() - self.wifi_band_tooltip.width() // 2
+        y = self.pc_widget.mapToGlobal(
+            self.pc_widget.rect().bottomLeft()
+        ).y() + 8
+        self.wifi_band_tooltip.move(x, y)
+        self.wifi_band_tooltip.show()
+
+    def clear_wifi_band_tooltip(self):
+        if self.wifi_band_tooltip is not None:
+            self.wifi_band_tooltip.close()
+            self.wifi_band_tooltip.deleteLater()
+            self.wifi_band_tooltip = None
+
+    def update_wifi_band(self):
+        band = self.get_connected_wifi_band()
+        is_5ghz = band == "5 GHz"
+        self.current_wifi_band = band
+        self.current_wifi_is_5ghz = is_5ghz
+
+        badge_colors = {
+            "2.4 GHz": ("#166534", "#dcfce7", "#bbf7d0"),
+            "5 GHz": ("#b91c1c", "#fee2e2", "#fecaca"),
+            "Other": ("#b91c1c", "#fee2e2", "#fecaca"),
+            "Unknown": ("#64748b", "#f1f5f9", "#cbd5e1"),
+        }
+        text_color, background, border = badge_colors[band]
+        self.wifi_band_badge.setText(band)
+        self.wifi_band_badge.setStyleSheet(
+            f"color: {text_color}; background: {background}; "
+            f"border: 1px solid {border}; border-radius: 6px; "
+            "padding: 2px 8px; font-size: 10px; font-weight: 600;"
+        )
+
+        self.camera_widget.set_laptop_band(is_5ghz)
+        self.cnc_widget.set_laptop_band(is_5ghz)
+        self.pc_widget.set_laptop_band(is_5ghz)
+
+        if band == "2.4 GHz":
+            self.clear_wifi_band_tooltip()
+        elif band in ("5 GHz", "Other"):
+            self.show_wifi_band_tooltip(band)
 
     def handle_network_changed(self, ssid):
         """Handle an actual Windows Wi-Fi/network change."""
@@ -334,6 +516,7 @@ class MainContentWidget(QWidget):
         """Update the UI using the current Wi-Fi SSID."""
         if ssid is None:
             ssid = self.get_connected_ssid()
+        self.update_wifi_band()
         if ssid != self.current_ssid:
             self.current_ssid = ssid
             self.ssid_detail.update_text(
@@ -351,44 +534,6 @@ class MainContentWidget(QWidget):
             self.pw_detail.update_text(
                 pw
             )
-
-            # --------------------------------
-            # Detect 5GHz network
-            # --------------------------------
-            if self.is_5ghz_network(
-                ssid
-            ):
-
-                print(
-                    "WARNING: ESP32 only "
-                    "supports 2.4GHz Wi-Fi"
-                )
-
-                self.camera_widget.set_connected_network(
-                    "⚠ 2.4GHz Required"
-                )
-
-                self.cnc_widget.set_connected_network(
-                    "⚠ 2.4GHz Required"
-                )
-
-            else:
-
-                self.camera_widget.target_ssid = (
-                    ssid
-                )
-
-                self.camera_widget.target_pw = (
-                    pw
-                )
-
-                self.cnc_widget.target_ssid = (
-                    ssid
-                )
-
-                self.cnc_widget.target_pw = (
-                    pw
-                )
 
             self.pc_widget.target_ssid = (
                 ssid
@@ -408,8 +553,6 @@ class MainContentWidget(QWidget):
             self.cnc_widget.target_pw = pw
 
         # --- 3. Scan nearby SSIDs to dynamically enable/disable the "Setup" buttons ---
-        visible_ssids = self.get_visible_ssids()
-        
         if hasattr(self, 'pc_widget'):
             self.pc_widget.set_online_status(
                 ssid != "No Wi-Fi"

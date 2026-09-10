@@ -86,7 +86,7 @@ def main():
     load_font_folder("./fonts/Poppins")
     
     # Ensure Poppins is the app default font after loading the font resources
-    app.setFont(QFontDatabase.font("Poppins", "", 10))
+    app.setFont(QFontDatabase.font("Poppins", "Medium", 10))
     
     try:
         with open("style.qss", "r") as f:

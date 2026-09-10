@@ -16,7 +16,7 @@ class WifiUdpListener(QObject):
         self.socket.readyRead.connect(self._read_pending_datagrams)
 
         if not self.socket.bind(
-            QHostAddress.SpecialAddress.AnyIPv4,
+            QHostAddress("0.0.0.0"),
             port,
             QUdpSocket.BindFlag.ShareAddress
             | QUdpSocket.BindFlag.ReuseAddressHint,
@@ -26,20 +26,35 @@ class WifiUdpListener(QObject):
                 f"{self.socket.errorString()}"
             )
 
+        print(
+            f"UDP heartbeat listener active on IPv4 port {port}"
+        )
+
     def _read_pending_datagrams(self):
         while self.socket.hasPendingDatagrams():
             datagram = self.socket.receiveDatagram()
+            print(
+                f"UDP datagram received from {datagram.senderAddress().toString()}"
+            )
 
             try:
                 payload = json.loads(
                     bytes(datagram.data()).decode("utf-8")
                 )
             except (UnicodeDecodeError, json.JSONDecodeError):
+                print("Ignored malformed UDP heartbeat")
                 continue
 
             device = payload.get("device")
             if not device:
+                print("Ignored UDP heartbeat without device id:", payload)
                 continue
+
+            print(
+                f"UDP heartbeat accepted: device={device}, "
+                f"connected={payload.get('connected')}, "
+                f"ssid={payload.get('ssid')}"
+            )
 
             self.status_received.emit(
                 str(device),

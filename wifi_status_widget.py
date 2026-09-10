@@ -47,6 +47,9 @@ class WifiStatusWidget(QWidget):
         self.disabled_tooltip = disabled_tooltip
         self.device_host = (device_host)
         self.udp_device_id = udp_device_id
+        self.laptop_on_5ghz = False
+        self.heartbeat_received = False
+        self._heartbeat_ssid = None
         
         self.connected_network = None
 
@@ -122,11 +125,27 @@ class WifiStatusWidget(QWidget):
 
     def set_connected_network(self, ssid):
         self.connected_network = ssid
+        if not self.udp_device_id:
+            self.heartbeat_received = bool(ssid)
+        self._heartbeat_ssid = ssid
+        self._refresh_network_label()
 
-        if hasattr(self, "network_label"):
-            self.network_label.setText(
-                ssid or "Disconnected"
-            )
+    def set_laptop_band(self, is_5ghz):
+        self.laptop_on_5ghz = is_5ghz
+        self._refresh_network_label()
+
+    def _refresh_network_label(self):
+        if not hasattr(self, "network_label"):
+            return
+
+        if self.laptop_on_5ghz:
+            label_text = "2.4 GHz Wi-Fi Required"
+        elif self.heartbeat_received and self._heartbeat_ssid:
+            label_text = self._heartbeat_ssid
+        else:
+            label_text = "Disconnected"
+
+        self.network_label.setText(label_text)
 
     def _handle_device_status(
         self,
@@ -136,10 +155,9 @@ class WifiStatusWidget(QWidget):
     ):
 
         self.esp_ssid = esp_ssid
-
-        self.set_connected_network(
-            esp_ssid if esp_connected else None
-        )
+        self.heartbeat_received = bool(esp_connected and esp_ssid)
+        self._heartbeat_ssid = esp_ssid
+        self._refresh_network_label()
 
         if pc_ssid is None:
             pc_ssid = read_pc_ssid()
@@ -171,10 +189,6 @@ class WifiStatusWidget(QWidget):
                     size=STATUS_ICON_SIZE,
                     color="#f45900"
                 )
-            )
-
-            self.network_label.setText(
-                f"{esp_ssid} (Mismatch)"
             )
 
             if not self.showing_mismatch_tooltip:

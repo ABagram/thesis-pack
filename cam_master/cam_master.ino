@@ -35,6 +35,9 @@ WiFiUDP statusUdp;
 const uint16_t STATUS_UDP_PORT = 4210;
 const unsigned long STATUS_BROADCAST_INTERVAL = 2500;
 unsigned long lastStatusBroadcast = 0;
+// Temporary diagnostic target. Replace with the laptop's current IP or make
+// this configurable once unicast delivery is confirmed.
+const IPAddress STATUS_LAPTOP_IP(192, 168, 0, 139);
 
 TFT_eSPI tft = TFT_eSPI();
 
@@ -302,9 +305,36 @@ void broadcastStatus() {
     String payload;
     serializeJson(doc, payload);
 
-    statusUdp.beginPacket(IPAddress(255, 255, 255, 255), STATUS_UDP_PORT);
-    statusUdp.print(payload);
-    statusUdp.endPacket();
+    IPAddress localIp = WiFi.localIP();
+    IPAddress subnetMask = WiFi.subnetMask();
+    IPAddress broadcastIp(
+        localIp[0] | ~subnetMask[0],
+        localIp[1] | ~subnetMask[1],
+        localIp[2] | ~subnetMask[2],
+        localIp[3] | ~subnetMask[3]
+    );
+
+    IPAddress broadcastAddresses[] = {
+        broadcastIp,
+        IPAddress(255, 255, 255, 255),
+        STATUS_LAPTOP_IP
+    };
+
+    for (IPAddress destination : broadcastAddresses) {
+        if (!statusUdp.beginPacket(destination, STATUS_UDP_PORT)) {
+            Serial.println("UDP heartbeat beginPacket failed");
+            continue;
+        }
+
+        statusUdp.print(payload);
+
+        if (statusUdp.endPacket() == 1) {
+            Serial.print("UDP heartbeat sent to ");
+            Serial.println(destination);
+        } else {
+            Serial.println("UDP heartbeat endPacket failed");
+        }
+    }
 }
 
 void enterStationMode(){
