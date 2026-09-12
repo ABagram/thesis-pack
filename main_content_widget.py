@@ -1,19 +1,20 @@
 import os
 import json
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSize
-from PyQt6.QtCore import QPoint, QRect
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QLabel, QFrame, QStackedWidget
-from PyQt6.QtGui import QFont
-from PyQt6.QtGui import QPainter, QColor, QPolygon
+from PyQt6.QtGui import QHideEvent, QShowEvent
 from pipeline_stepper import PipelineStepperWidget
 import subprocess
 import re
-from copy_string_widget import CopyStringWidget
+from components.copy_string_widget import CopyStringWidget
 from wifi_status_widget import WifiStatusWidget
 from load_icon import load_icon
 from wifi_network_monitor import WifiNetworkMonitor
 from wifi_credential_manager import WifiCredentialManager
 from wifi_udp_listener import WifiUdpListener
+from components.anchored_tooltip import AnchoredTooltip
+from components.inline_badge import InlineBadgeParagraphWrapper
+from esp_wifi_guidance import show_esp_wifi_guidance
 
 # Define your pipeline array as a single source of truth
 PRODUCTION_STAGES = [
@@ -53,6 +54,7 @@ ICON_ASSET_PATHS = {
     "copy": "icons/content_copy.svg",
     "network_ok": "icons/wifi.svg",
     "network_warning": "icons/warning.svg",
+    "wifi_channel": "icons/wifi_channel.svg"
 }
 
 # Unified directory manifest parsing lookup map
@@ -66,47 +68,6 @@ STAGE_INDEX_MAP = {
     "gcode_upload": 6,
     "completed": 7
 }
-
-
-class WifiBandTooltip(QWidget):
-    def __init__(self, text, parent=None):
-        super().__init__(parent)
-
-        self.setWindowFlags(
-            Qt.WindowType.ToolTip
-            | Qt.WindowType.FramelessWindowHint
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 12, 14, 12)
-
-        label = QLabel(text)
-        label.setWordWrap(True)
-        label.setMaximumWidth(300)
-        label.setStyleSheet(
-            "color: #ffffff; font-size: 12px; background: transparent;"
-        )
-        layout.addWidget(label)
-        self.adjustSize()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(QColor("#991b1b"))
-        painter.setPen(Qt.PenStyle.NoPen)
-
-        body_rect = self.rect().adjusted(0, 8, 0, 0)
-        painter.drawRoundedRect(body_rect, 8, 8)
-
-        center_x = self.width() // 2
-        arrow = QPolygon([
-            QPoint(center_x - 8, 8),
-            QPoint(center_x, 0),
-            QPoint(center_x + 8, 8),
-        ])
-        painter.drawPolygon(arrow)
-        painter.end()
 
 class MainContentWidget(QWidget):
     hardware_trigger_clicked = pyqtSignal()
@@ -243,7 +204,7 @@ class MainContentWidget(QWidget):
 
         # -- 1. Camera Node Badge --
         self.camera_widget = WifiStatusWidget(
-        system_name="ORDER CAPTURE STATION",
+        system_name="ORDER SCANNING STATION",
         icon_path=ICON_ASSET_PATHS["camera"],
         temp_ssid="CAM_SETUP_AP", # set up via WiFiManager.autoConnect
         temp_pw="SST@2002", # set up via WiFiManager.autoConnect
@@ -447,36 +408,75 @@ class MainContentWidget(QWidget):
         if self.wifi_band_tooltip is not None:
             return
 
+        print(f"Creating Wi-Fi tooltip for band: {band}")
+
         if band == "5 GHz":
             text = (
-                "This network is 5 GHz. Switch to a 2.4 GHz Wi-Fi "
-                "network for the ESP devices."
+                "Switch the PC to a 2.4 GHz Wi-Fi network."
             )
         else:
             text = (
-                "The current Wi-Fi band could not be used by the ESP "
-                "devices. Switch to a 2.4 GHz Wi-Fi network."
+                "The PC Wi-Fi band is not supported by the ESP devices. "
+                "Switch to a 2.4 GHz Wi-Fi network."
             )
 
-        self.wifi_band_tooltip = WifiBandTooltip(text)
-        self.wifi_band_tooltip.adjustSize()
+        # ---------------------------------------------------------
+        # Tooltip content
+        # ---------------------------------------------------------
 
-        anchor = self.pc_widget.mapToGlobal(
-            self.pc_widget.rect().center()
+        content = InlineBadgeParagraphWrapper(
+            text_font_color="#ffffff",
+            badge_font_color="#991b1b",
+            badge_bg_color="#fee2e2",
+            badge_border_color="#fecaca",
+            badge_icon_color="#991b1b",
         )
-        x = anchor.x() - self.wifi_band_tooltip.width() // 2
-        y = self.pc_widget.mapToGlobal(
-            self.pc_widget.rect().bottomLeft()
-        ).y() + 8
-        self.wifi_band_tooltip.move(x, y)
+
+        content.insert_text("Switch the ")
+        content.insert_badge_with_icon(
+            "PC",
+            ICON_ASSET_PATHS["pc"],
+        )
+        content.insert_text(" to a ")
+        content.insert_badge_with_icon(
+            "2.4 GHz",
+            ICON_ASSET_PATHS["wifi_channel"],
+        )
+        content.insert_text(" Wi-Fi network.")
+        # ---------------------------------------------------------
+        # Create tooltip
+        #
+        # pc_widget is the widget the tooltip points to.
+        # "down" means the tooltip appears below it.
+        # ---------------------------------------------------------
+
+        self.wifi_band_tooltip = AnchoredTooltip(
+            content=content,
+            target=self.pc_widget,
+            position="down",
+            tooltip_color="#991b1b",
+        )
+
         self.wifi_band_tooltip.show()
-
+        
     def clear_wifi_band_tooltip(self):
-        if self.wifi_band_tooltip is not None:
-            self.wifi_band_tooltip.close()
-            self.wifi_band_tooltip.deleteLater()
-            self.wifi_band_tooltip = None
+        tooltip = self.wifi_band_tooltip
+        self.wifi_band_tooltip = None
 
+        print("Clearing Wi-Fi tooltip")
+        
+        if tooltip is not None:
+            tooltip.close()
+            tooltip.deleteLater()
+
+    def hide_all_tooltips(self):
+        # PC Wi-Fi tooltip
+        self.clear_wifi_band_tooltip()
+
+        # ESP Wi-Fi tooltips
+        for widget in list(self.esp_wifi_tooltips.keys()):
+            self.clear_esp_wifi_guidance(widget)
+            
     def update_wifi_band(self):
         band = self.get_connected_wifi_band()
         is_5ghz = band == "5 GHz"
@@ -497,8 +497,8 @@ class MainContentWidget(QWidget):
             "padding: 2px 8px; font-size: 10px; font-weight: 600;"
         )
 
-        self.camera_widget.set_laptop_band(is_5ghz)
-        self.cnc_widget.set_laptop_band(is_5ghz)
+        # Only the PC badge describes the laptop's Wi-Fi band. ESP badges
+        # describe their own heartbeat reachability instead.
         self.pc_widget.set_laptop_band(is_5ghz)
 
         if band == "2.4 GHz":
@@ -552,6 +552,8 @@ class MainContentWidget(QWidget):
             self.cnc_widget.target_ssid = ssid
             self.cnc_widget.target_pw = pw
 
+        self.sync_esp_wifi_guidance()
+
         # --- 3. Scan nearby SSIDs to dynamically enable/disable the "Setup" buttons ---
         if hasattr(self, 'pc_widget'):
             self.pc_widget.set_online_status(
@@ -590,6 +592,28 @@ class MainContentWidget(QWidget):
             esp_ssid,
             pc_ssid
         )
+
+        self.sync_esp_wifi_guidance()
+
+    def sync_esp_wifi_guidance(self):
+        pc_ssid = self.current_ssid
+        if pc_ssid is None:
+            pc_ssid = self.get_connected_ssid()
+
+        for widget in (self.camera_widget, self.cnc_widget):
+            esp_ssid = getattr(widget, "_heartbeat_ssid", None)
+            esp_online = getattr(widget, "heartbeat_received", False)
+            if esp_online and esp_ssid and esp_ssid != pc_ssid:
+                show_esp_wifi_guidance(self, widget, esp_ssid)
+            else:
+                self.clear_esp_wifi_guidance(widget)
+
+
+    def clear_esp_wifi_guidance(self, widget):
+        tooltip = getattr(self, "esp_wifi_tooltips", {}).pop(widget, None)
+        if tooltip is not None:
+            tooltip.close()
+            tooltip.deleteLater()
 
     def get_wifi_password(self, ssid):
         """Get the password stored by Windows for a Wi-Fi profile."""

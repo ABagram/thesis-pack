@@ -10,6 +10,8 @@ from wifi_credential_manager import WifiCredentialManager
 ICON_WARNING = "icons/warning.svg"
 ICON_OFFLINE = "icons/globe_2_cancel.svg"
 ICON_ONLINE = "icons/wifi.svg"
+ICON_ROUTER_OFF = "icons/router_off.svg"
+ICON_WIFI_CHANNEL = "icons/wifi_channel.svg"
 
 STATUS_ICON_SIZE = 14
 
@@ -49,6 +51,7 @@ class WifiStatusWidget(QWidget):
         self.udp_device_id = udp_device_id
         self.laptop_on_5ghz = False
         self.heartbeat_received = False
+        self.heartbeat_matches_pc = False
         self._heartbeat_ssid = None
         
         self.connected_network = None
@@ -87,7 +90,7 @@ class WifiStatusWidget(QWidget):
         )
     
         self.text_label = QLabel(
-            self.system_name.title(),
+            self.system_name.upper(),
             self.badge
         )
         self.text_label.setObjectName("SystemName")
@@ -105,18 +108,10 @@ class WifiStatusWidget(QWidget):
 )
         self.connect_status.setObjectName("Connect_Status_Offline")
 
-        self.ssid_label = QLabel("SSID:")
-        self.ssid_label.setStyleSheet("""
-            font-size: 12px;
-            text-align: left;
-            padding: 0;
-            border: none;
-        """)
         self.network_label = QLabel("Disconnected")
         self.network_label.setObjectName("WifiStatusWidget_SSID_Name")
         
         bottom_row.addWidget(self.connect_status)
-        bottom_row.addWidget(self.ssid_label)
         bottom_row.addWidget(self.network_label)
 
         # Add rows to badge
@@ -127,6 +122,7 @@ class WifiStatusWidget(QWidget):
         self.connected_network = ssid
         if not self.udp_device_id:
             self.heartbeat_received = bool(ssid)
+            self.heartbeat_matches_pc = self.heartbeat_received
         self._heartbeat_ssid = ssid
         self._refresh_network_label()
 
@@ -138,14 +134,45 @@ class WifiStatusWidget(QWidget):
         if not hasattr(self, "network_label"):
             return
 
+        # 1. Band Warning State (Laptop on 5 GHz)
         if self.laptop_on_5ghz:
             label_text = "2.4 GHz Wi-Fi Required"
-        elif self.heartbeat_received and self._heartbeat_ssid:
+            icon_text = ICON_WIFI_CHANNEL
+            icon_color = "#DC2626"
+        
+        # 2. Connected & Matched State
+        elif (
+            self.heartbeat_received
+            and self.heartbeat_matches_pc
+            and self._heartbeat_ssid
+        ):
             label_text = self._heartbeat_ssid
+            icon_text = ICON_ONLINE
+            icon_color = "#16a34a"
+            
+        # 3. Network Mismatch State (Receiving UDP, but SSIDs differ)
+        elif (
+            self.heartbeat_received
+            and not self.heartbeat_matches_pc
+        ):
+            label_text = "Network Mismatch"
+            icon_text = ICON_ROUTER_OFF 
+            icon_color = "#DC2626" # Amber tone for mismatch distinction
+
+        # 4. Disconnected State
         else:
             label_text = "Disconnected"
+            icon_text = ICON_OFFLINE
+            icon_color = "#DC2626"
 
         self.network_label.setText(label_text)
+        self.connect_status.setPixmap(
+            load_icon(
+                icon_text,
+                size=STATUS_ICON_SIZE,
+                color=icon_color
+            )
+        )
 
     def _handle_device_status(
         self,
@@ -157,15 +184,18 @@ class WifiStatusWidget(QWidget):
         self.esp_ssid = esp_ssid
         self.heartbeat_received = bool(esp_connected and esp_ssid)
         self._heartbeat_ssid = esp_ssid
-        self._refresh_network_label()
 
         if pc_ssid is None:
             pc_ssid = read_pc_ssid()
 
         is_valid_online = (
             esp_connected
+            and bool(esp_ssid)
             and pc_ssid == esp_ssid
         )
+
+        self.heartbeat_matches_pc = is_valid_online
+        self._refresh_network_label()
 
         self.set_online_status(
             is_valid_online
@@ -181,14 +211,6 @@ class WifiStatusWidget(QWidget):
                 f"SSID mismatch: "
                 f"PC='{pc_ssid}' "
                 f"{self.device_host}='{esp_ssid}'"
-            )
-
-            self.connect_status.setPixmap(
-                load_icon(
-                    ICON_WARNING,
-                    size=STATUS_ICON_SIZE,
-                    color="#f45900"
-                )
             )
 
             if not self.showing_mismatch_tooltip:
@@ -254,82 +276,18 @@ class WifiStatusWidget(QWidget):
         )
 
     def _handle_udp_timeout(self):
+        self.heartbeat_matches_pc = False
         self._handle_device_status(False, None)
         self.udp_watchdog_timer.start(6000)
         
     def set_online_status(self, is_online: bool):
-        """Updates the status badge and notifies the main window
-        when the ESP online/offline state changes.
-        """
-
-        # --------------------------------------------------------
-        # Track the previous state.
-        # --------------------------------------------------------
-
-        previous_status = getattr(
-            self,
-            "_device_online",
-            None
-        )
-
+        """Tracks online state changes and notifies the main window."""
+        previous_status = getattr(self, "_device_online", None)
         self._device_online = is_online
 
-        # --------------------------------------------------------
-        # Update visual status.
-        # --------------------------------------------------------
-
-        if not hasattr(self, "connect_status"):
-            return
-
-        if sip.isdeleted(self.connect_status):
-            return
-
-        if is_online:
-
-            self.connect_status.setPixmap(
-                load_icon(
-                    ICON_ONLINE,
-                    size=STATUS_ICON_SIZE,
-                    color="#16A34A"
-                )
-            )
-
-            self.connect_status.setObjectName(
-                "Connect_Status_Online"
-            )
-
-        else:
-
-            self.connect_status.setPixmap(
-                load_icon(
-                    ICON_OFFLINE,
-                    size=STATUS_ICON_SIZE,
-                    color="#DC2626"
-                )
-            )
-
-            self.connect_status.setObjectName(
-                "Connect_Status_Offline"
-            )
-
-        # --------------------------------------------------------
-        # Tell MainContentWidget only when the state actually
-        # changes.
-        #
-        # This prevents repeated calls to poll_device_network()
-        # from repeatedly starting/stopping the WLAN scanner.
-        # --------------------------------------------------------
-
         if previous_status != is_online:
-
-            print(
-                f"{self.system_name} online state changed: "
-                f"{previous_status} -> {is_online}"
-            )
-
-            self.device_online_changed.emit(
-                is_online
-            )
+            print(f"{self.system_name} online state changed: {previous_status} -> {is_online}")
+            self.device_online_changed.emit(is_online)
             
     def start_setup_overlay(self):
         print("Opening WifiSetupOverlay")
