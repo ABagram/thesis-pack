@@ -35,15 +35,6 @@ GLYPH_MAP = {
     7: "\ue86c"  # check_circle
 }
 
-# Device/icon glyphs (Material Symbols fallback). These will later be swapped to SVG files.
-GLYPH_CAMERA = "\ue438"
-GLYPH_PC = "\ue30c"
-GLYPH_CNC = "\ue131"
-# Status glyphs: connected / disconnected
-GLYPH_STATUS_CONNECTED = "\ue63e" 
-GLYPH_STATUS_DISCONNECTED = "\ue648"
-GLYPH_COPY = "\ue14d" # content_copy (Verify this hex matches your exact TTF font)
-
 # SVG-ready asset map for later migration away from private-use Unicode glyphs.
 ICON_ASSET_PATHS = {
     "camera": "icons/linked_camera.svg", #linked_camera
@@ -125,11 +116,20 @@ class MainContentWidget(QWidget):
             )
         )
 
+        self.camera_widget.device_online_changed.connect(
+            lambda online: self.sync_esp_wifi_guidance() # ensures that tooltip showing network that the ESP is connected to only shows if there's a network mismatch and is receiving UDP packets
+        )
+
         self.cnc_widget.device_online_changed.connect(
             lambda online: self.handle_device_online_changed(
                 "cnc",
                 online
             )
+        )
+
+        self.cnc_widget.device_online_changed.connect(
+            lambda online: self.sync_esp_wifi_guidance()
+            # ensures that tooltip showing network that the ESP is connected to only shows if there's a network mismatch and is receiving UDP packets
         )
 
         self.network_monitor.start()
@@ -188,21 +188,15 @@ class MainContentWidget(QWidget):
         credentials_layout.addWidget(self.pw_label, 1, 1)
         credentials_layout.addWidget(self.pw_detail, 1, 2)
 
-        # Drop credentials stack into the main ribbon layout
         network_main_layout.addWidget(credentials_widget)
 
-        # Add a spacer to separate credentials on the left from the statuses on the right
         network_main_layout.addStretch(1)
         
-        # --- RIGHT ZONE: ESP Hardware Monitoring Strip ---
         status_strip_widget = QWidget()
         status_strip_layout = QHBoxLayout(status_strip_widget)
         status_strip_layout.setContentsMargins(0, 0, 0, 0)
         status_strip_layout.setSpacing(12)
 
-        status_glyph = GLYPH_STATUS_CONNECTED if wifi_ssid != "No Wi-Fi" else GLYPH_STATUS_DISCONNECTED
-
-        # -- 1. Camera Node Badge --
         self.camera_widget = WifiStatusWidget(
         system_name="ORDER SCANNING STATION",
         icon_path=ICON_ASSET_PATHS["camera"],
@@ -220,7 +214,6 @@ class MainContentWidget(QWidget):
     )
         status_strip_layout.addWidget(self.camera_widget)
 
-        # -- 2. PC Server Node Badge --
         self.pc_widget = WifiStatusWidget(
         system_name="PC",
         icon_path=ICON_ASSET_PATHS["pc"],
@@ -231,7 +224,6 @@ class MainContentWidget(QWidget):
     )
         status_strip_layout.addWidget(self.pc_widget)
 
-        # -- 3. CNC Machine Node Badge --
         self.cnc_widget = WifiStatusWidget(
         system_name="BOX BLANK MAKER",
         icon_path=ICON_ASSET_PATHS["package_2"],
@@ -468,14 +460,6 @@ class MainContentWidget(QWidget):
         if tooltip is not None:
             tooltip.close()
             tooltip.deleteLater()
-
-    def hide_all_tooltips(self):
-        # PC Wi-Fi tooltip
-        self.clear_wifi_band_tooltip()
-
-        # ESP Wi-Fi tooltips
-        for widget in list(self.esp_wifi_tooltips.keys()):
-            self.clear_esp_wifi_guidance(widget)
             
     def update_wifi_band(self):
         band = self.get_connected_wifi_band()
@@ -517,11 +501,11 @@ class MainContentWidget(QWidget):
         if ssid is None:
             ssid = self.get_connected_ssid()
         self.update_wifi_band()
-        if ssid != self.current_ssid:
+        network_changed = ssid != self.current_ssid
+
+        if network_changed:
             self.current_ssid = ssid
-            self.ssid_detail.update_text(
-                ssid
-            )
+            self.ssid_detail.update_text(ssid)
 
             pw = (
                 self.get_wifi_password(
@@ -531,9 +515,7 @@ class MainContentWidget(QWidget):
                 else "Unavailable"
             )
 
-            self.pw_detail.update_text(
-                pw
-            )
+            self.pw_detail.update_text(pw)
 
             self.pc_widget.target_ssid = (
                 ssid
@@ -552,6 +534,21 @@ class MainContentWidget(QWidget):
             self.cnc_widget.target_ssid = ssid
             self.cnc_widget.target_pw = pw
 
+        if network_changed:
+
+            self.camera_widget.heartbeat_received = False
+            self.camera_widget.heartbeat_matches_pc = False
+
+            self.cnc_widget.heartbeat_received = False
+            self.cnc_widget.heartbeat_matches_pc = False
+
+            self.clear_esp_wifi_guidance(
+                self.camera_widget
+            )
+            self.clear_esp_wifi_guidance(
+                self.cnc_widget
+            )
+            
         self.sync_esp_wifi_guidance()
 
         # --- 3. Scan nearby SSIDs to dynamically enable/disable the "Setup" buttons ---
@@ -602,9 +599,18 @@ class MainContentWidget(QWidget):
 
         for widget in (self.camera_widget, self.cnc_widget):
             esp_ssid = getattr(widget, "_heartbeat_ssid", None)
-            esp_online = getattr(widget, "heartbeat_received", False)
-            if esp_online and esp_ssid and esp_ssid != pc_ssid:
-                show_esp_wifi_guidance(self, widget, esp_ssid)
+            esp_heartbeat = getattr(
+                widget,
+                "heartbeat_received",
+                False
+            )
+
+            if esp_heartbeat and esp_ssid and esp_ssid != pc_ssid:
+                show_esp_wifi_guidance(
+                    self,
+                    widget,
+                    esp_ssid
+                )
             else:
                 self.clear_esp_wifi_guidance(widget)
 

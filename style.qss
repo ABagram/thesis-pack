@@ -162,7 +162,7 @@ QLabel#SystemIcon{
 QLabel#SystemName{
     font-size: 12px;
     font-weight: bold;
-    color: #475569;
+    color: #0f172a;
     border: none;
     background: transparent;
     text-align: left;
@@ -177,7 +177,7 @@ QLabel#Connect_Status_Mismatch{
 
 QLabel#WifiStatusWidget_SSID_Name{
     font-size: 10px;
-    color: #64748B;
+    color: #6b7280;
     border: 1px solid #e2e8f0;
     border-radius: 6px;
     padding: 4px 8px;

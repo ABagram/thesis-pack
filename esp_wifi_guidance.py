@@ -21,10 +21,7 @@ def show_esp_wifi_guidance(
 
     content.insert_text("OSS is connected to ")
     content.insert_badge_with_icon(esp_ssid, ICON_ONLINE)
-    # --------------------------------------------------------
-    # Tooltip
-    # --------------------------------------------------------
-
+    
     tooltip = AnchoredTooltip(
         content=content,
         target=widget,

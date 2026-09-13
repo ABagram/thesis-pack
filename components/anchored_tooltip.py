@@ -1,4 +1,4 @@
-from PyQt6.QtCore import Qt, QPoint
+from PyQt6.QtCore import Qt, QPoint, QEvent, QTimer
 from PyQt6.QtWidgets import QWidget, QVBoxLayout
 from PyQt6.QtGui import QPainter, QColor, QPolygon
 
@@ -11,7 +11,7 @@ class AnchoredTooltip(QWidget):
         target=None,
         position="up",
         tooltip_color="#2b2b2b",
-        gap=8,
+        gap=4,
         parent=None,
     ):
         super().__init__(parent)
@@ -35,6 +35,12 @@ class AnchoredTooltip(QWidget):
         self.position = position
         self.tooltip_color = tooltip_color
         self.gap = gap
+        self._watched_window = None
+        self._requested_visible = False
+        self.arrow_width = 16
+        self.arrow_height = 8
+        self.vertical_margin = 6
+        self.horizontal_margin = 10
 
         self.setWindowFlags(
             Qt.WindowType.ToolTip
@@ -47,40 +53,102 @@ class AnchoredTooltip(QWidget):
 
         layout = QVBoxLayout(self)
 
+        vertical_margin = self.vertical_margin
+        horizontal_margin = self.horizontal_margin
+        arrow_height = self.arrow_height
+
         if self.position == "up":
             layout.setContentsMargins(
-                14, # left
-                8, # top
-                14, # right
-                12, # bottom
+                horizontal_margin,
+                vertical_margin,
+                horizontal_margin,
+                vertical_margin + arrow_height,
             )
 
         elif self.position == "down":
             layout.setContentsMargins(
-                14,
-                12,
-                14,
-                1,
+                horizontal_margin,
+                vertical_margin + arrow_height,
+                horizontal_margin,
+                vertical_margin,
             )
 
         elif self.position == "left":
             layout.setContentsMargins(
-                14,
-                8,
-                18,
-                8,
+                horizontal_margin,
+                vertical_margin,
+                horizontal_margin + arrow_height,
+                vertical_margin,
             )
 
         else:  # right
             layout.setContentsMargins(
-                18, # left
-                8, # top
-                14, # right
-                8, # bottom
+                horizontal_margin + arrow_height,
+                vertical_margin,
+                horizontal_margin,
+                vertical_margin,
             )
-
         layout.setSpacing(0)
         layout.addWidget(self.content)
+
+    def _install_window_event_filter(self):
+        if self.target is None:
+            return
+
+        window = self.target.window()
+
+        if window is not None:
+            window.installEventFilter(self)
+            self._watched_window = window
+
+    def _remove_window_event_filter(self):
+        window = getattr(self, "_watched_window", None)
+
+        if window is not None:
+            window.removeEventFilter(self)
+            self._watched_window = None
+
+    def eventFilter(self, obj, event):
+
+        if event.type() in (
+            QEvent.Type.Move,
+            QEvent.Type.Resize,
+        ):
+            if self.isVisible():
+                self.position_relative_to_target()
+
+        elif event.type() in (
+            QEvent.Type.ActivationChange,
+            QEvent.Type.WindowActivate,
+            QEvent.Type.WindowDeactivate,
+            QEvent.Type.WindowStateChange,
+            QEvent.Type.Hide,
+            QEvent.Type.Show,
+        ):
+            QTimer.singleShot(
+                0,
+                self._sync_with_watched_window
+            )
+
+        return super().eventFilter(obj, event)
+
+    def _sync_with_watched_window(self):
+        window = self._watched_window
+        if window is None or not self._requested_visible:
+            return
+
+        window_visible = (
+            window.isVisible()
+            and not window.isMinimized()
+            and window.isActiveWindow()
+        )
+
+        if window_visible:
+            super().show()
+            self.position_relative_to_target()
+            self.raise_()
+        else:
+            super().hide()
 
     def position_relative_to_target(self):
         if self.target is None:
@@ -88,8 +156,6 @@ class AnchoredTooltip(QWidget):
 
         if not self.target.isVisible():
             return
-
-        target_rect = self.target.rect()
 
         # --------------------------------------------------------
         # Limit tooltip width to target width
@@ -141,22 +207,22 @@ class AnchoredTooltip(QWidget):
 
         self.adjustSize()
 
-        # --------------------------------------------------------
-        # Target geometry in global coordinates
-        # --------------------------------------------------------
-
         top_left = self.target.mapToGlobal(
-            target_rect.topLeft()
-        )
-
-        bottom_right = self.target.mapToGlobal(
-            target_rect.bottomRight()
+            QPoint(0, 0)
         )
 
         target_left = top_left.x()
         target_top = top_left.y()
-        target_right = bottom_right.x()
-        target_bottom = bottom_right.y()
+
+        target_right = (
+            target_left
+            + self.target.width()
+        )
+
+        target_bottom = (
+            target_top
+            + self.target.height()
+        )
 
         target_center_x = (
             target_left + target_right
@@ -175,63 +241,40 @@ class AnchoredTooltip(QWidget):
 
         if self.position == "up":
 
-            x = (
-                target_center_x
-                - tooltip_width // 2
-            )
-
-            y = (
-                target_top
-                - tooltip_height
-                - self.gap
-            )
+            x = (target_center_x - tooltip_width // 2)
+            y = (target_top - tooltip_height - self.gap)
 
         elif self.position == "down":
 
-            x = (
-                target_center_x
-                - tooltip_width // 2
-            )
-
-            y = (
-                target_bottom
-                + self.gap
-            )
+            x = (target_center_x - tooltip_width // 2)
+            y = (target_bottom + self.gap)
 
         elif self.position == "left":
 
-            x = (
-                target_left
-                - tooltip_width
-                - self.gap
-            )
-
-            y = (
-                target_center_y
-                - tooltip_height // 2
-            )
+            x = (target_left - tooltip_width - self.gap)
+            y = (target_center_y - tooltip_height // 2)
 
         else:  # right
 
-            x = (
-                target_right
-                + self.gap
-            )
-
-            y = (
-                target_center_y
-                - tooltip_height // 2
-            )
+            x = (target_right + self.gap)
+            y = (target_center_y - tooltip_height // 2)
 
         self.move(x, y)
 
     def show(self):
-        self.position_relative_to_target()
+
+        self._install_window_event_filter()
+        self._requested_visible = True
 
         super().show()
 
+        self.position_relative_to_target()
+
         self.raise_()
-        self.activateWindow()
+
+    def hide(self):
+        self._requested_visible = False
+        super().hide()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -248,8 +291,8 @@ class AnchoredTooltip(QWidget):
             Qt.PenStyle.NoPen
         )
 
-        arrow_width = 16
-        arrow_height = 8
+        arrow_width = self.arrow_width
+        arrow_height = self.arrow_height
 
         if self.position == "up":
 
@@ -388,3 +431,7 @@ class AnchoredTooltip(QWidget):
             painter.drawPolygon(arrow)
 
         painter.end()
+
+    def closeEvent(self, event):
+        self._remove_window_event_filter()
+        super().closeEvent(event)
