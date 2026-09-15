@@ -15,6 +15,9 @@ from wifi_udp_listener import WifiUdpListener
 from components.anchored_tooltip import AnchoredTooltip
 from components.inline_badge import InlineBadgeParagraphWrapper
 from esp_wifi_guidance import show_esp_wifi_guidance
+from branding import *
+from components.org_chart_container import OrgChartContainer
+from new_order import *
 
 # Define your pipeline array as a single source of truth
 PRODUCTION_STAGES = [
@@ -33,19 +36,6 @@ GLYPH_MAP = {
     5: "\ueb8e", # terminal
     6: "\ue2c3", # cloud_upload
     7: "\ue86c"  # check_circle
-}
-
-# SVG-ready asset map for later migration away from private-use Unicode glyphs.
-ICON_ASSET_PATHS = {
-    "camera": "icons/linked_camera.svg", #linked_camera
-    "pc": "icons/desktop_windows.svg", #desktop_windows
-    "package_2": "icons/package_2.svg", 
-    "wifi": "icons/wifi.svg",
-    "lock": "icons/lock.svg",
-    "copy": "icons/content_copy.svg",
-    "network_ok": "icons/wifi.svg",
-    "network_warning": "icons/warning.svg",
-    "wifi_channel": "icons/wifi_channel.svg"
 }
 
 # Unified directory manifest parsing lookup map
@@ -85,8 +75,8 @@ class MainContentWidget(QWidget):
 
         self.network_monitor = WifiNetworkMonitor(
             setup_ssids=[
-                "CAM_SETUP_AP",
-                "CUTTER_SETUP_AP"
+                "OSS_MASTER_SETUP_AP",
+                "CCP_MASTER_SETUP_AP"
             ]
         )
 
@@ -109,14 +99,14 @@ class MainContentWidget(QWidget):
         # ESP online/offline state → WLAN scanner control
         # ============================================================
 
-        self.camera_widget.device_online_changed.connect(
+        self.oss_master_status_widget.device_online_changed.connect(
             lambda online: self.handle_device_online_changed(
-                "camera",
+                "oss-master",
                 online
             )
         )
 
-        self.camera_widget.device_online_changed.connect(
+        self.oss_master_status_widget.device_online_changed.connect(
             lambda online: self.sync_esp_wifi_guidance() # ensures that tooltip showing network that the ESP is connected to only shows if there's a network mismatch and is receiving UDP packets
         )
 
@@ -138,9 +128,18 @@ class MainContentWidget(QWidget):
         self.content_layout = QVBoxLayout(self)
         self.content_layout.setContentsMargins(15, 15, 15, 15)
         self.content_layout.setSpacing(15)
+
+        self.view_stack = QStackedWidget()
+        self.network_page = QWidget()
+        self.pipeline_page = QWidget()
+        self.network_page_layout = QVBoxLayout(self.network_page)
+        self.pipeline_page_layout = QVBoxLayout(self.pipeline_page)
+        self.view_stack.addWidget(self.network_page)
+        self.view_stack.addWidget(self.pipeline_page)
+        self.content_layout.addWidget(self.view_stack)
         
         self.network_details_frame = QFrame()
-        self.content_layout.addWidget(self.network_details_frame)
+        self.network_page_layout.addWidget(self.network_details_frame)
         
         # Create a primary horizontal container to hold both functional halves
         network_main_layout = QHBoxLayout(self.network_details_frame)
@@ -156,7 +155,7 @@ class MainContentWidget(QWidget):
 
         # Populate SSID Row
         self.ssid_icon = QLabel()  # wifi icon
-        self.ssid_icon.setPixmap(load_icon(ICON_ASSET_PATHS["wifi"], size=14, color="#64748b"))
+        self.ssid_icon.setPixmap(load_icon(ICON_WIFI, size=14, color="#64748b"))
         self.ssid_icon.setStyleSheet("font-size: 14px; color: #64748b;")
         self.ssid_label = QLabel("SSID:")
         self.ssid_label.setStyleSheet("font-weight: bold; color: #475569; font-size: 12px")
@@ -175,7 +174,7 @@ class MainContentWidget(QWidget):
 
         # Populate Password Row
         self.pw_icon = QLabel() 
-        self.pw_icon.setPixmap(load_icon(ICON_ASSET_PATHS["lock"], size=14, color="#64748b"))
+        self.pw_icon.setPixmap(load_icon(ICON_LOCK, size=14, color="#64748b"))
         self.pw_icon.setStyleSheet("font-size: 14px; color: #64748b;")
         self.pw_label = QLabel("Pass:")
         self.pw_label.setStyleSheet("font-weight: bold; color: #475569; font-size: 12px;")
@@ -192,49 +191,56 @@ class MainContentWidget(QWidget):
 
         network_main_layout.addStretch(1)
         
-        status_strip_widget = QWidget()
-        status_strip_layout = QHBoxLayout(status_strip_widget)
-        status_strip_layout.setContentsMargins(0, 0, 0, 0)
-        status_strip_layout.setSpacing(12)
+        wifi_status_widget_hierarchy_chart = OrgChartContainer()
 
-        self.camera_widget = WifiStatusWidget(
-        system_name="ORDER SCANNING STATION",
-        icon_path=ICON_ASSET_PATHS["camera"],
-        temp_ssid="CAM_SETUP_AP", # set up via WiFiManager.autoConnect
+        self.pc_widget = WifiStatusWidget(
+                system_name="This PC",
+                icon_path=ICON_PC,
+                ap_ssid=None,
+                temp_pw=None,
+                target_ssid=wifi_ssid,
+                target_pw=wifi_pw,
+                is_esp=False
+            )
+        
+        self.oss_master_status_widget = WifiStatusWidget(
+        system_name="Order Scanning Station",
+        icon_path=ICON_CAMERA,
         temp_pw="SST@2002", # set up via WiFiManager.autoConnect
         target_ssid=wifi_ssid,
         target_pw=wifi_pw,
-        device_host="CAM-MASTER",
-        udp_device_id="camera",
+        device_host="OSS-MASTER",
+        ap_ssid="OSS_MASTER_SETUP_AP",
+        mac_address="68:09:47:37:81:24",
+        udp_device_id="oss-master",
         disabled_tooltip=(
             "Camera captive portal "
             "setup broadcast cannot "
             "be found near laptop."
         )
     )
-        status_strip_layout.addWidget(self.camera_widget)
 
-        self.pc_widget = WifiStatusWidget(
-        system_name="PC",
-        icon_path=ICON_ASSET_PATHS["pc"],
-        temp_ssid=None,
-        temp_pw=None,
-        target_ssid=wifi_ssid,
-        target_pw=wifi_pw
-    )
-        status_strip_layout.addWidget(self.pc_widget)
-
+        #self.oss_slave_x_status_widget = WifiStatusWidget(
+        #    system_name="Front Camera",
+        #    icon_path=ICON_CAMERA,
+        #    mac_address="c0:4e:30:2f:28:94",
+        #)
+        
         self.cnc_widget = WifiStatusWidget(
-        system_name="BOX BLANK MAKER",
-        icon_path=ICON_ASSET_PATHS["package_2"],
-        temp_ssid="CUTTER_SETUP_AP", # set up via WiFiManager.autoConnect
+        system_name="Cutting and Creasing Plotter",
+        icon_path=ICON_BOX,
         temp_pw="SST@2002", # set up via WiFiManager.autoConnect
         target_ssid=wifi_ssid,
         target_pw=wifi_pw,
-        device_host="CUTTER-MASTER",  # change to real IP
+        device_host="CCP-MASTER",
+        ap_ssid="CCP_MASTER_SETUP_AP",
         udp_device_id="cnc",
     )
-        status_strip_layout.addWidget(self.cnc_widget)
+        wifi_status_widget_hierarchy_chart.add_tier([self.pc_widget])
+        wifi_status_widget_hierarchy_chart.add_tier([
+            self.oss_master_status_widget,
+            self.cnc_widget
+        ])
 
         self.update_wifi_band()
 
@@ -243,33 +249,14 @@ class MainContentWidget(QWidget):
         self.wifi_band_timer.start(3000)
 
         # Mount the finished hardware monitoring strip into the ribbon
-        network_main_layout.addWidget(status_strip_widget)
+        network_main_layout.addWidget(wifi_status_widget_hierarchy_chart)
 
-        # 1. Physical Loop Emulator Viewport controls
-        self.mock_hw_frame = QFrame()
-        self.mock_hw_frame.setStyleSheet("background-color: #1a252f; border: 1px dashed #34495e; border-radius: 6px;")
-        self.hw_layout = QVBoxLayout(self.mock_hw_frame)
-        
-        self.hw_title = QLabel("📡 Physical Hardware Loop Emulator")
-        self.hw_title.setStyleSheet("color: #ecf0f1; font-weight: bold;")
-        self.hw_layout.addWidget(self.hw_title)
-        
-        btn_layout = QHBoxLayout()
-        self.btn_order_esp = QPushButton("New Order Trigger")
-        self.btn_order_esp.setStyleSheet("background-color: #e74c3c; color: white; padding: 10px; font-weight: bold; border-radius: 4px;")
-        
-        self.btn_simulate_esp = QPushButton("Start Cycle Monitor")
-        self.btn_simulate_esp.setStyleSheet("background-color: #2ecc71; color: white; padding: 10px; font-weight: bold; border-radius: 4px;")
-        
-        btn_layout.addWidget(self.btn_order_esp)
-        btn_layout.addWidget(self.btn_simulate_esp)
-        self.hw_layout.addLayout(btn_layout)
-        self.content_layout.addWidget(self.mock_hw_frame)
+        self.pipeline_page_layout.setContentsMargins(0, 0, 0, 0)
 
         # 2. Dynamic Component Stepper Instantiation
         self.pipeline_stepper = PipelineStepperWidget(PRODUCTION_STAGES, GLYPH_MAP)
         self.pipeline_stepper.stage_selected.connect(self.handle_stage_navigation)
-        self.content_layout.addWidget(self.pipeline_stepper)
+        self.pipeline_page_layout.addWidget(self.pipeline_stepper)
 
         # 3. Stacked Containers for Viewports
         self.tab_stack = QStackedWidget()
@@ -282,15 +269,17 @@ class MainContentWidget(QWidget):
             view.setStyleSheet("color: white; padding: 20px;")
             self.tab_stack.addWidget(view)
             
-        self.content_layout.addWidget(self.tab_stack)
+        self.pipeline_page_layout.addWidget(self.tab_stack)
 
         self.display_label = QLabel("Select an automated order node on the left to review metrics.")
         self.display_label.setStyleSheet("font-size: 13px; color: #7f8c8d;")
-        self.content_layout.addWidget(self.display_label)
+        self.pipeline_page_layout.addWidget(self.display_label)
 
-        # Event connections
-        self.btn_simulate_esp.clicked.connect(self.start_mock_pipeline_animation)
-        self.btn_order_esp.clicked.connect(self.hardware_trigger_clicked.emit)
+    def show_view(self, view_id):
+        if view_id == "network":
+            self.view_stack.setCurrentWidget(self.network_page)
+        elif view_id == "pipeline":
+            self.view_stack.setCurrentWidget(self.pipeline_page)
 
     def get_connected_ssid(self):
         """Get currently connected Wi-Fi SSID on Windows."""
@@ -427,20 +416,14 @@ class MainContentWidget(QWidget):
         content.insert_text("Switch the ")
         content.insert_badge_with_icon(
             "PC",
-            ICON_ASSET_PATHS["pc"],
+            ICON_PC,
         )
         content.insert_text(" to a ")
         content.insert_badge_with_icon(
             "2.4 GHz",
-            ICON_ASSET_PATHS["wifi_channel"],
+            ICON_WIFI_CHANNEL,
         )
         content.insert_text(" Wi-Fi network.")
-        # ---------------------------------------------------------
-        # Create tooltip
-        #
-        # pc_widget is the widget the tooltip points to.
-        # "down" means the tooltip appears below it.
-        # ---------------------------------------------------------
 
         self.wifi_band_tooltip = AnchoredTooltip(
             content=content,
@@ -525,8 +508,8 @@ class MainContentWidget(QWidget):
                 pw
             )
             
-            self.camera_widget.target_ssid = ssid
-            self.camera_widget.target_pw = pw
+            self.oss_master_status_widget.target_ssid = ssid
+            self.oss_master_status_widget.target_pw = pw
 
             self.pc_widget.target_ssid = ssid
             self.pc_widget.target_pw = pw
@@ -536,14 +519,14 @@ class MainContentWidget(QWidget):
 
         if network_changed:
 
-            self.camera_widget.heartbeat_received = False
-            self.camera_widget.heartbeat_matches_pc = False
+            self.oss_master_status_widget.heartbeat_received = False
+            self.oss_master_status_widget.heartbeat_matches_pc = False
 
             self.cnc_widget.heartbeat_received = False
             self.cnc_widget.heartbeat_matches_pc = False
 
             self.clear_esp_wifi_guidance(
-                self.camera_widget
+                self.oss_master_status_widget
             )
             self.clear_esp_wifi_guidance(
                 self.cnc_widget
@@ -577,18 +560,14 @@ class MainContentWidget(QWidget):
         if pc_ssid is None:
             pc_ssid = self.get_connected_ssid()
 
-        self.camera_widget.handle_udp_status(
-            device_id,
-            is_connected,
-            esp_ssid,
-            pc_ssid
-        )
-        self.cnc_widget.handle_udp_status(
-            device_id,
-            is_connected,
-            esp_ssid,
-            pc_ssid
-        )
+        if device_id == "oss-master":
+            self.oss_master_status_widget.handle_udp_status(
+                device_id, is_connected, esp_ssid, pc_ssid
+            )
+        elif device_id == "cnc":
+            self.cnc_widget.handle_udp_status(
+                device_id, is_connected, esp_ssid, pc_ssid
+            )
 
         self.sync_esp_wifi_guidance()
 
@@ -597,7 +576,7 @@ class MainContentWidget(QWidget):
         if pc_ssid is None:
             pc_ssid = self.get_connected_ssid()
 
-        for widget in (self.camera_widget, self.cnc_widget):
+        for widget in (self.oss_master_status_widget, self.cnc_widget):
             esp_ssid = getattr(widget, "_heartbeat_ssid", None)
             esp_heartbeat = getattr(
                 widget,
@@ -663,8 +642,8 @@ class MainContentWidget(QWidget):
             f"{is_online}"
         )
 
-        camera_online = getattr(
-            self.camera_widget,
+        oss_master_online = getattr(
+            self.oss_master_status_widget,
             "_device_online",
             False
         )
@@ -679,7 +658,7 @@ class MainContentWidget(QWidget):
         # If either ESP is offline, keep WLAN scanning enabled.
         # --------------------------------------------------------
 
-        if not camera_online or not cnc_online:
+        if not oss_master_online or not cnc_online:
 
             print(
                 "At least one ESP is offline. "
@@ -707,8 +686,8 @@ class MainContentWidget(QWidget):
             f"Setup AP detected by Wi-Fi monitor: {ssid}"
         )
 
-        if ssid == "CAM_SETUP_AP" and getattr(
-            self.camera_widget,
+        if ssid == "OSS_MASTER_SETUP_AP" and getattr(
+            self.oss_master_status_widget,
             "_setup_running",
             False
         ):
@@ -724,11 +703,11 @@ class MainContentWidget(QWidget):
         # We found the AP, so stop requesting WLAN scans.
         self.network_monitor.stop_scanning()
 
-        if ssid == "CAM_SETUP_AP":
+        if ssid == "OSS_MASTER_SETUP_AP":
 
-            self.camera_widget._setup_running = True
+            self.oss_master_status_widget._setup_running = True
 
-            self.camera_widget.start_setup_overlay()
+            self.oss_master_status_widget.start_setup_overlay()
 
         elif ssid == "CUTTER_SETUP_AP":
 

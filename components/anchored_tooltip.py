@@ -91,13 +91,18 @@ class AnchoredTooltip(QWidget):
         layout.setSpacing(0)
         layout.addWidget(self.content)
 
+        # Automatically hook up hover monitoring if a target is provided
+        if self.target is not None:
+            self.target.setMouseTracking(True)
+            self.target.installEventFilter(self)
+
     def _install_window_event_filter(self):
         if self.target is None:
             return
 
         window = self.target.window()
 
-        if window is not None:
+        if window is not None and window != self.target:
             window.installEventFilter(self)
             self._watched_window = window
 
@@ -109,26 +114,34 @@ class AnchoredTooltip(QWidget):
             self._watched_window = None
 
     def eventFilter(self, obj, event):
+        # Handle target hover events
+        if obj == self.target:
+            if event.type() == QEvent.Type.Enter:
+                self.show()
+            elif event.type() == QEvent.Type.Leave:
+                self.hide()
 
-        if event.type() in (
-            QEvent.Type.Move,
-            QEvent.Type.Resize,
-        ):
-            if self.isVisible():
-                self.position_relative_to_target()
+        # Handle window move/resize/activation events
+        elif obj == self._watched_window:
+            if event.type() in (
+                QEvent.Type.Move,
+                QEvent.Type.Resize,
+            ):
+                if self.isVisible():
+                    self.position_relative_to_target()
 
-        elif event.type() in (
-            QEvent.Type.ActivationChange,
-            QEvent.Type.WindowActivate,
-            QEvent.Type.WindowDeactivate,
-            QEvent.Type.WindowStateChange,
-            QEvent.Type.Hide,
-            QEvent.Type.Show,
-        ):
-            QTimer.singleShot(
-                0,
-                self._sync_with_watched_window
-            )
+            elif event.type() in (
+                QEvent.Type.ActivationChange,
+                QEvent.Type.WindowActivate,
+                QEvent.Type.WindowDeactivate,
+                QEvent.Type.WindowStateChange,
+                QEvent.Type.Hide,
+                QEvent.Type.Show,
+            ):
+                QTimer.singleShot(
+                    0,
+                    self._sync_with_watched_window
+                )
 
         return super().eventFilter(obj, event)
 
@@ -157,50 +170,32 @@ class AnchoredTooltip(QWidget):
         if not self.target.isVisible():
             return
 
-        # --------------------------------------------------------
-        # Limit tooltip width to target width
-        # --------------------------------------------------------
-
-        # --------------------------------------------------------
-        # Determine natural content width
-        # --------------------------------------------------------
-
         available_width = max(
             1,
             self.target.width() - 28
         )
 
         if hasattr(self.content, "document"):
-
             document = self.content.document()
-
-            # Remove any previous wrapping constraint.
             document.setTextWidth(-1)
-
             natural_width = (
                 document.documentLayout()
                 .documentSize()
                 .width()
             )
-
             content_width = min(
                 int(natural_width) + 1,
                 available_width
             )
-
             self.content.update_document_size(
                 content_width
             )
-
         else:
-
             self.content.adjustSize()
-
             content_width = min(
                 self.content.sizeHint().width(),
                 available_width
             )
-
             self.content.setFixedWidth(
                 content_width
             )
@@ -235,58 +230,45 @@ class AnchoredTooltip(QWidget):
         tooltip_width = self.width()
         tooltip_height = self.height()
 
-        # --------------------------------------------------------
-        # Position
-        # --------------------------------------------------------
-
         if self.position == "up":
-
             x = (target_center_x - tooltip_width // 2)
             y = (target_top - tooltip_height - self.gap)
 
         elif self.position == "down":
-
             x = (target_center_x - tooltip_width // 2)
             y = (target_bottom + self.gap)
 
         elif self.position == "left":
-
             x = (target_left - tooltip_width - self.gap)
             y = (target_center_y - tooltip_height // 2)
 
         else:  # right
-
             x = (target_right + self.gap)
             y = (target_center_y - tooltip_height // 2)
 
         self.move(x, y)
 
     def show(self):
-
         self._install_window_event_filter()
         self._requested_visible = True
 
         super().show()
-
         self.position_relative_to_target()
-
         self.raise_()
 
     def hide(self):
+        self._remove_window_event_filter()
         self._requested_visible = False
         super().hide()
 
     def paintEvent(self, event):
         painter = QPainter(self)
-
         painter.setRenderHint(
             QPainter.RenderHint.Antialiasing
         )
-
         painter.setBrush(
             QColor(self.tooltip_color)
         )
-
         painter.setPen(
             Qt.PenStyle.NoPen
         )
@@ -295,143 +277,61 @@ class AnchoredTooltip(QWidget):
         arrow_height = self.arrow_height
 
         if self.position == "up":
-
             body_rect = self.rect().adjusted(
-                0,
-                0,
-                0,
-                -arrow_height,
+                0, 0, 0, -arrow_height
             )
-
-            painter.drawRoundedRect(
-                body_rect,
-                8,
-                8,
-            )
-
+            painter.drawRoundedRect(body_rect, 8, 8)
             center_x = self.width() // 2
-
             arrow = QPolygon([
-                QPoint(
-                    center_x - arrow_width // 2,
-                    self.height() - arrow_height,
-                ),
-                QPoint(
-                    center_x,
-                    self.height(),
-                ),
-                QPoint(
-                    center_x + arrow_width // 2,
-                    self.height() - arrow_height,
-                ),
+                QPoint(center_x - arrow_width // 2, self.height() - arrow_height),
+                QPoint(center_x, self.height()),
+                QPoint(center_x + arrow_width // 2, self.height() - arrow_height),
             ])
-
             painter.drawPolygon(arrow)
 
         elif self.position == "down":
-
             body_rect = self.rect().adjusted(
-                0,
-                arrow_height,
-                0,
-                0,
+                0, arrow_height, 0, 0
             )
-
-            painter.drawRoundedRect(
-                body_rect,
-                8,
-                8,
-            )
-
+            painter.drawRoundedRect(body_rect, 8, 8)
             center_x = self.width() // 2
-
             arrow = QPolygon([
-                QPoint(
-                    center_x - arrow_width // 2,
-                    arrow_height,
-                ),
-                QPoint(
-                    center_x,
-                    0,
-                ),
-                QPoint(
-                    center_x + arrow_width // 2,
-                    arrow_height,
-                ),
+                QPoint(center_x - arrow_width // 2, arrow_height),
+                QPoint(center_x, 0),
+                QPoint(center_x + arrow_width // 2, arrow_height),
             ])
-
             painter.drawPolygon(arrow)
 
         elif self.position == "left":
-
             body_rect = self.rect().adjusted(
-                0,
-                0,
-                -arrow_height,
-                0,
+                0, 0, -arrow_height, 0
             )
-
-            painter.drawRoundedRect(
-                body_rect,
-                8,
-                8,
-            )
-
+            painter.drawRoundedRect(body_rect, 8, 8)
             center_y = self.height() // 2
-
             arrow = QPolygon([
-                QPoint(
-                    self.width() - arrow_height,
-                    center_y - arrow_width // 2,
-                ),
-                QPoint(
-                    self.width(),
-                    center_y,
-                ),
-                QPoint(
-                    self.width() - arrow_height,
-                    center_y + arrow_width // 2,
-                ),
+                QPoint(self.width() - arrow_height, center_y - arrow_width // 2),
+                QPoint(self.width(), center_y),
+                QPoint(self.width() - arrow_height, center_y + arrow_width // 2),
             ])
-
             painter.drawPolygon(arrow)
 
         else:  # right
-
             body_rect = self.rect().adjusted(
-                arrow_height,
-                0,
-                0,
-                0,
+                arrow_height, 0, 0, 0
             )
-
-            painter.drawRoundedRect(
-                body_rect,
-                8,
-                8,
-            )
-
+            painter.drawRoundedRect(body_rect, 8, 8)
             center_y = self.height() // 2
-
             arrow = QPolygon([
-                QPoint(
-                    arrow_height,
-                    center_y - arrow_width // 2,
-                ),
-                QPoint(
-                    0,
-                    center_y,
-                ),
-                QPoint(
-                    arrow_height,
-                    center_y + arrow_width // 2,
-                ),
+                QPoint(arrow_height, center_y - arrow_width // 2),
+                QPoint(0, center_y),
+                QPoint(arrow_height, center_y + arrow_width // 2),
             ])
-
             painter.drawPolygon(arrow)
 
         painter.end()
 
     def closeEvent(self, event):
         self._remove_window_event_filter()
+        if self.target is not None:
+            self.target.removeEventFilter(self)
         super().closeEvent(event)

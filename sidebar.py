@@ -20,13 +20,21 @@ ICON_ASSET_PATHS = {
     "folder": "icons/folder.svg"
 }
 
-class SidebarWidget(QFrame):
-    """Handles the collapsible pipeline sidebar, order list scanning, and batch selection."""
-    order_selected = pyqtSignal(str)  # Emitted when an order card is clicked
+class OrderQueue(QFrame):
+    """Collapsible order queue with configurable edge placement."""
+    order_selected = pyqtSignal(str)
 
-    def __init__(self, initial_batch_dir):
-        super().__init__()
-        self.setObjectName("Sidebar")
+    def __init__(self, initial_batch_dir, position="left", parent=None):
+        super().__init__(parent)
+        self.setObjectName("OrderQueue")
+
+        position = position.lower()
+        if position not in {"left", "right", "top", "bottom"}:
+            raise ValueError(
+                "position must be one of: left, right, top, bottom"
+            )
+        self.position = position
+        self.is_horizontal = position in {"top", "bottom"}
         
         self.active_main_directory = initial_batch_dir
         self.order_simple_status = {}
@@ -35,13 +43,21 @@ class SidebarWidget(QFrame):
         
         self.sidebar_expanded_width = 340
         self.sidebar_collapsed_width = 70
-        self.setMinimumWidth(self.sidebar_expanded_width)
-        self.setMaximumWidth(self.sidebar_expanded_width)
+        self.sidebar_expanded_height = 250
+        self.sidebar_collapsed_height = 70
+
+        if self.is_horizontal:
+            self.setMinimumHeight(self.sidebar_expanded_height)
+            self.setMaximumHeight(self.sidebar_expanded_height)
+        else:
+            self.setMinimumWidth(self.sidebar_expanded_width)
+            self.setMaximumWidth(self.sidebar_expanded_width)
 
         self.init_ui()
 
     def init_ui(self):
-        self.sidebar_layout = QVBoxLayout(self)
+        layout_type = QHBoxLayout if self.is_horizontal else QVBoxLayout
+        self.sidebar_layout = layout_type(self)
         self.sidebar_layout.setContentsMargins(8, 10, 8, 10)
         self.sidebar_layout.setSpacing(10)
 
@@ -116,7 +132,8 @@ class SidebarWidget(QFrame):
         self.order_scroll_area.setStyleSheet("background: transparent; border: none;")
         
         self.scroll_content = QWidget()
-        self.scroll_layout = QVBoxLayout(self.scroll_content)
+        scroll_layout_type = QHBoxLayout if self.is_horizontal else QVBoxLayout
+        self.scroll_layout = scroll_layout_type(self.scroll_content)
         self.scroll_layout.setContentsMargins(0, 0, 0, 0)
         self.scroll_layout.setSpacing(6)
         self.scroll_layout.addStretch()
@@ -162,7 +179,8 @@ class SidebarWidget(QFrame):
             
             # Wipe UI clean for new batch folders
             for i in reversed(range(self.scroll_layout.count() - 1)): 
-                widget = self.scroll_layout.itemAt(i).widget()
+                item = self.scroll_layout.itemAt(i)
+                widget = item.widget() if item is not None else None
                 if widget:
                     widget.setParent(None)
             self.scan_active_subdirectories()
@@ -219,15 +237,26 @@ class SidebarWidget(QFrame):
         self.apply_order_filter()
 
     def toggle_sidebar(self):
-        current_width = self.width()
-        if current_width > self.sidebar_collapsed_width:
-            target_width = self.sidebar_collapsed_width
+        current_size = self.height() if self.is_horizontal else self.width()
+        collapsed_size = (
+            self.sidebar_collapsed_height
+            if self.is_horizontal
+            else self.sidebar_collapsed_width
+        )
+        expanded_size = (
+            self.sidebar_expanded_height
+            if self.is_horizontal
+            else self.sidebar_expanded_width
+        )
+
+        if current_size > collapsed_size:
+            target_size = collapsed_size
             self.sidebar_is_collapsed = True
             self.btn_toggle.setText("☰")
             self.batch_frame.hide()
             self.btn_set_active_batch.setText("📁")
         else:
-            target_width = self.sidebar_expanded_width
+            target_size = expanded_size
             self.sidebar_is_collapsed = False
             self.btn_toggle.setText(" ☰   Collapse Pipeline")
             self.batch_frame.show()
@@ -236,12 +265,20 @@ class SidebarWidget(QFrame):
         for order_id, (widget_ref, _) in self.known_orders.items():
             widget_ref.set_collapsed_mode(self.sidebar_is_collapsed)
 
-        self.animation = QPropertyAnimation(self, b"minimumWidth")
+        property_name = b"minimumHeight" if self.is_horizontal else b"minimumWidth"
+        self.animation = QPropertyAnimation(self, property_name)
         self.animation.setDuration(180)
-        self.animation.setStartValue(current_width)
-        self.animation.setEndValue(target_width)
+        self.animation.setStartValue(current_size)
+        self.animation.setEndValue(target_size)
         self.animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
-        self.animation.valueChanged.connect(lambda val: self.setMaximumWidth(val))
+        if self.is_horizontal:
+            self.animation.valueChanged.connect(
+                lambda val: self.setMaximumHeight(val)
+            )
+        else:
+            self.animation.valueChanged.connect(
+                lambda val: self.setMaximumWidth(val)
+            )
         self.animation.start()
 
     def sync_order_widget_state(self, order_id):
@@ -283,3 +320,7 @@ class SidebarWidget(QFrame):
                 widget_ref.setVisible(status == 'In Progress')
             elif sel == 'In Queue':
                 widget_ref.setVisible(status == 'In Queue')
+
+
+# Backward-compatible import name for existing callers.
+SidebarWidget = OrderQueue

@@ -4,6 +4,7 @@
 #include <WiFiUdp.h>
 #include <ArduinoJson.h>
 #include <TFT_eSPI.h>
+#include <esp_now.h>
 
 WiFiManager wm;
 
@@ -41,16 +42,27 @@ const IPAddress STATUS_LAPTOP_IP(192, 168, 0, 139);
 
 TFT_eSPI tft = TFT_eSPI();
 
+typedef struct {
+    uint8_t msgType;      // 0 = creds, 1 = trigger
+    char ssid[32];
+    char pass[64];
+    char laptopIp[16];
+} EspNowPacket;
+
+uint8_t broadcastAddr[] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+IPAddress laptopIp;
+bool haveLaptopIp = false;
+
 void showConnectedScreen() {
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_GREEN);
     tft.setTextSize(2);
-    tft.drawString("CAM MASTER", 20, 20);
+    tft.drawString("OSS MASTER", 20, 20);
     tft.setTextColor(TFT_WHITE);
     tft.drawString("Status: Connected", 20, 60);
     tft.drawString("SSID: " + WiFi.SSID(), 20, 100);
     tft.drawString("IP: " + WiFi.localIP().toString(), 20, 140);
-    tft.drawString("Host: CAM-MASTER.local", 20, 180);
+    tft.drawString("Host: OSS-MASTER.local", 20, 180);
 }
 
 void showPortalScreen(int secondsLeft) {
@@ -64,7 +76,7 @@ void showPortalScreen(int secondsLeft) {
         tft.drawString("WiFi Setup Mode", 20, 20);
         tft.setTextColor(TFT_WHITE);
         tft.drawString("Connect to:", 20, 60);
-        tft.drawString("CAM_SETUP_AP", 20, 85);
+        tft.drawString("OSS_MASTER_SETUP_AP", 20, 85);
         tft.drawString("Password:", 20, 120);
         tft.drawString("SST@2002", 20, 145);
         tft.drawString("Open: 192.168.4.1", 20, 180);
@@ -84,6 +96,38 @@ void showPortalScreen(int secondsLeft) {
     }
 }
 
+void setupEspNow() {
+    if (esp_now_init() != ESP_OK) {
+        Serial.println("ESP-NOW init failed");
+        return;
+    }
+    if (!esp_now_is_peer_exist(broadcastAddr)) {
+        esp_now_peer_info_t peer = {};
+        memcpy(peer.peer_addr, broadcastAddr, 6);
+        peer.channel = 0;   // use whatever channel STA is currently on
+        peer.encrypt = false;
+        if (esp_now_add_peer(&peer) != ESP_OK) {
+            Serial.println("Failed to add ESP-NOW broadcast peer");
+        }
+    }
+}
+
+void broadcastCreds() {
+    if (WiFi.status() != WL_CONNECTED) return;
+    EspNowPacket pkt = {};
+    pkt.msgType = 0;
+    strncpy(pkt.ssid, WiFi.SSID().c_str(), sizeof(pkt.ssid) - 1);
+    strncpy(pkt.pass, WiFi.psk().c_str(), sizeof(pkt.pass) - 1);
+    if (haveLaptopIp) strncpy(pkt.laptopIp, laptopIp.toString().c_str(), sizeof(pkt.laptopIp) - 1);
+    esp_now_send(broadcastAddr, (uint8_t*)&pkt, sizeof(pkt));
+}
+
+void broadcastTrigger() {
+    EspNowPacket pkt = {};
+    pkt.msgType = 1;
+    esp_now_send(broadcastAddr, (uint8_t*)&pkt, sizeof(pkt));
+}
+
 void setup() {
     Serial.begin(115200);
 
@@ -98,16 +142,16 @@ void setup() {
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_WHITE);
     tft.setTextSize(2);
-    tft.drawString("CAM-MASTER", 20, 20);
+    tft.drawString("OSS-MASTER", 20, 20);
 
     pinMode(CONFIG_WIFI_PIN, INPUT_PULLUP);
     pinMode(CREATE_ORDER_PIN, INPUT_PULLUP);
     
     // network hostname
-    WiFi.setHostname("CAM-MASTER");
+    WiFi.setHostname("OSS-MASTER");
 
-    // set a temporary access point called CAM_SETUP_AP for the PC to connect to CAM_MASTER
-    bool res = wm.autoConnect("CAM_SETUP_AP", "SST@2002");
+    // set a temporary access point called OSS_MASTER_SETUP_AP for the PC to connect to OSS_MASTER
+    bool res = wm.autoConnect("OSS_MASTER_SETUP_AP", "SST@2002");
 
     if (!res){
         Serial.println("Failed to connect");
@@ -126,12 +170,31 @@ void setup() {
 
     statusUdp.begin(STATUS_UDP_PORT);
     startNetworkServices();
+    setupEspNow();
     showConnectedScreen();
+}
 
+void checkForLaptopAck() {
+    int packetSize = statusUdp.parsePacket();
+    if (packetSize <= 0) return;
+
+    char buf[128];
+    int len = statusUdp.read(buf, min(packetSize, (int)sizeof(buf) - 1));
+    buf[len] = 0;
+
+    StaticJsonDocument<128> ackDoc;
+    if (deserializeJson(ackDoc, buf) == DeserializationError::Ok &&
+        ackDoc["type"] == "discovery_ack") {
+        laptopIp = statusUdp.remoteIP();
+        haveLaptopIp = true;
+        Serial.print("Learned laptop IP: ");
+        Serial.println(laptopIp);
+    }
 }
 
 void loop()
 {
+    checkForLaptopAck();
     server.handleClient();
     broadcastStatus();
 
@@ -172,6 +235,7 @@ void loop()
             }
 
             startNetworkServices();
+            setupEspNow();
 
             if (WiFi.status() == WL_CONNECTED)
                 showConnectedScreen();
@@ -235,6 +299,13 @@ void loop()
         }
         wifiLost = false;
     }
+
+    bool orderState = digitalRead(CREATE_ORDER_PIN);
+    if (createOrderLastState == HIGH && orderState == LOW) {
+        Serial.println("Order button pressed - triggering capture");
+        broadcastTrigger();
+    }
+    createOrderLastState = orderState;
 }
 
 void startSetupPortal()
@@ -253,9 +324,9 @@ void startSetupPortal()
 
     showPortalScreen(timeoutDuration);
 
-    Serial.println("Starting AP Portal: CAM_SETUP_AP");
+    Serial.println("Starting AP Portal: OSS_MASTER_SETUP_AP");
 
-    wm.startConfigPortal("CAM_SETUP_AP", "SST@2002"); 
+    wm.startConfigPortal("OSS_MASTER_SETUP_AP", "SST@2002"); 
 
     portalRunning = true;
     portalStartTime = millis();
@@ -275,7 +346,7 @@ void handleStatus() {
     else
         doc["mode"] = "unknown";
 
-    doc["hostname"] = "CAM-MASTER";
+    doc["hostname"] = "OSS-MASTER";
 
     String response;
     serializeJson(doc, response);
@@ -294,7 +365,7 @@ void broadcastStatus() {
     DynamicJsonDocument doc(256);
     bool connected = WiFi.status() == WL_CONNECTED;
 
-    doc["device"] = "camera";
+    doc["device"] = "oss-master";
     doc["connected"] = connected;
     doc["ssid"] = connected ? WiFi.SSID() : "";
     doc["ip"] = connected
@@ -335,6 +406,7 @@ void broadcastStatus() {
             Serial.println("UDP heartbeat endPacket failed");
         }
     }
+    broadcastCreds();
 }
 
 void enterStationMode(){
@@ -346,7 +418,7 @@ void enterStationMode(){
 
 void startNetworkServices(){
     if (WiFi.status() == WL_CONNECTED){
-        if (MDNS.begin("CAM-MASTER")){
+        if (MDNS.begin("OSS-MASTER")){
             Serial.println("mDNS started");
         } else{
             Serial.println("Failed to start mDNS");

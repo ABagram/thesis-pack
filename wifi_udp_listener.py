@@ -33,14 +33,13 @@ class WifiUdpListener(QObject):
     def _read_pending_datagrams(self):
         while self.socket.hasPendingDatagrams():
             datagram = self.socket.receiveDatagram()
-            print(
-                f"UDP datagram received from {datagram.senderAddress().toString()}"
-            )
+            sender_addr = datagram.senderAddress()
+            sender_port = datagram.senderPort()
+
+            print(f"UDP datagram received from {sender_addr.toString()}")
 
             try:
-                payload = json.loads(
-                    bytes(datagram.data()).decode("utf-8")
-                )
+                payload = json.loads(bytes(datagram.data()).decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 print("Ignored malformed UDP heartbeat")
                 continue
@@ -55,6 +54,11 @@ class WifiUdpListener(QObject):
                 f"connected={payload.get('connected')}, "
                 f"ssid={payload.get('ssid')}"
             )
+
+            # Reply so the master learns our current IP (no hardcoding needed)
+            if device == "oss-master":
+                ack = json.dumps({"type": "discovery_ack"}).encode("utf-8")
+                self.socket.writeDatagram(ack, sender_addr, sender_port)
 
             self.status_received.emit(
                 str(device),

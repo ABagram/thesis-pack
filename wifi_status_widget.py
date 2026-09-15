@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QWidget, QFrame, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QToolTip
+from PyQt6.QtWidgets import QWidget, QFrame, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QToolTip, QGridLayout, QSizePolicy
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QRect
 from PyQt6.QtGui import QFont, QIcon, QPixmap
 from PyQt6 import sip
@@ -6,12 +6,8 @@ from load_icon import load_icon
 from read_pc_ssid import read_pc_ssid
 from wifi_setup_overlay import WifiSetupOverlay
 from wifi_credential_manager import WifiCredentialManager
-
-ICON_WARNING = "icons/warning.svg"
-ICON_OFFLINE = "icons/globe_2_cancel.svg"
-ICON_ONLINE = "icons/wifi.svg"
-ICON_ROUTER_OFF = "icons/router_off.svg"
-ICON_WIFI_CHANNEL = "icons/wifi_channel.svg"
+from components.icon_badge import IconBadge
+from branding import *
 
 STATUS_ICON_SIZE = 14
 
@@ -25,7 +21,6 @@ class WifiStatusWidget(QWidget):
         self,
         system_name: str,
         icon_path: str,
-        temp_ssid: str | None,
         temp_pw: str | None,
         target_ssid: str,
         target_pw: str,
@@ -33,21 +28,29 @@ class WifiStatusWidget(QWidget):
             "Target setup network not detected."
         ),
         device_host=None,
+        ap_ssid=None,
+        mac_address=None,
         udp_device_id: str | None = None,
+        is_esp: bool = True,
         parent=None
     ):
         super().__init__(parent)
         
         self.showing_mismatch_tooltip = False
-        
+
+        self.is_esp = is_esp
         self.system_name = system_name
         self.icon_path = icon_path
-        self.temp_ssid = temp_ssid
         self.temp_pw = temp_pw
         self.target_ssid = target_ssid
         self.target_pw = target_pw
         self.disabled_tooltip = disabled_tooltip
-        self.device_host = (device_host)
+        
+        # Store values with distinct names to prevent overwriting
+        self._device_host_val = device_host
+        self._ap_ssid_val = ap_ssid
+        self._mac_address_val = mac_address
+        
         self.udp_device_id = udp_device_id
         self.laptop_on_5ghz = False
         self.heartbeat_received = False
@@ -56,68 +59,110 @@ class WifiStatusWidget(QWidget):
         
         self.connected_network = None
 
+        self.setSizePolicy(
+            QSizePolicy.Policy.Preferred, 
+            QSizePolicy.Policy.Maximum
+        )
+                
         self.init_ui()
 
         if self.udp_device_id:
             self._setup_udp_watchdog()
 
     def init_ui(self):
-        
-        root_layout = QVBoxLayout(self)
+        root_layout = QVBoxLayout(self)  # Fixed: changed from QGridLayout to QVBoxLayout
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        self.badge = QFrame(self)
-        self.badge.setObjectName("WifiStatusWidget")
-        root_layout.addWidget(self.badge)
+        self.status_widget = QFrame(self)
+        self.status_widget.setObjectName("WifiStatusWidget")
+        root_layout.addWidget(self.status_widget)
 
-        badge_layout = QVBoxLayout(self.badge)
+        badge_layout = QVBoxLayout(self.status_widget)
         badge_layout.setContentsMargins(8, 6, 8, 6)
         badge_layout.setSpacing(6)
 
         top_row = QHBoxLayout()
         top_row.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
-        self.icon_label = QLabel()
-        self.icon_label.setObjectName("SystemIcon")
-        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.icon_label.setPixmap(
-            load_icon(
-                self.icon_path,
-                size=14,
-                color="#64748b"
-            )
-        )
-    
-        self.text_label = QLabel(
-            self.system_name.upper(),
-            self.badge
-        )
-        self.text_label.setObjectName("SystemName")
-        
-        top_row.addWidget(self.icon_label)
-        top_row.addWidget(self.text_label)
+        self.system_name_label = QLabel()
+        self.system_name_label.setText(f'<p style="line-height: 80%; width: 30px">{self.system_name}</p>')
+        self.system_name_label.setWordWrap(True)
+        self.system_name_label.setObjectName("SystemName")
 
-        bottom_row = QHBoxLayout()
+        self.icon_badge = IconBadge(
+            icon_path=self.icon_path,
+            icon_size=16,
+            icon_color=text_slate_400,
+            badge_color=bg_slate_50
+        )
+
+        top_row.addWidget(self.system_name_label)
+        top_row.addStretch()
+        top_row.addWidget(self.icon_badge)
+
+        bottom_row = QVBoxLayout()
         bottom_row.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        
-        self.connect_status = QLabel()
-        self.connect_status.setFixedSize(20, 20)
-        self.connect_status.setPixmap(
-    load_icon(ICON_OFFLINE, size=STATUS_ICON_SIZE, color="#DC2626")
-)
-        self.connect_status.setObjectName("Connect_Status_Offline")
 
-        self.network_label = QLabel("Disconnected")
-        self.network_label.setObjectName("WifiStatusWidget_SSID_Name")
+        connect_status_row = QHBoxLayout()
+        connect_status_row.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        bottom_row.addLayout(connect_status_row)
+
+        self.connect_status_icon = IconBadge(
+            icon_path=ICON_OFFLINE,
+            icon_size=STATUS_ICON_SIZE,
+            icon_color=text_red_600,
+            badge_color=bg_red_50,
+            shape="circle",
+        )
         
-        bottom_row.addWidget(self.connect_status)
-        bottom_row.addWidget(self.network_label)
+        self.network_label = QLabel("Disconnected")
+        self.network_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.network_label.setObjectName("WifiStatusWidget_SSID_Name")
+
+        # Create title and value widgets properly
+        device_host_title = QLabel("Device Host:")
+        device_host_title.setStyleSheet(f"""
+                font-size: 10px;
+                color: {text_slate_600};
+            """)
+        self.device_host_label = QLabel(self._device_host_val or "N/A")
+        self.device_host_label.setStyleSheet("font-size: 10px;")
+
+        ap_ssid_title = QLabel("AP SSID:")
+        ap_ssid_title.setStyleSheet(f"""
+                font-size: 10px;
+                color: {text_slate_600};
+            """)
+        self.ap_ssid_label = QLabel(self._ap_ssid_val or "N/A")
+        self.ap_ssid_label.setStyleSheet("font-size: 10px;")
+
+        mac_address_title = QLabel("MAC Address:")
+        mac_address_title.setStyleSheet(f"""
+                font-size: 10px;
+                color: {text_slate_600};
+            """)
+        self.mac_address_label = QLabel(self._mac_address_val or "N/A")
+        self.mac_address_label.setStyleSheet("font-size: 10px;")
+        
+        # Nest the QGridLayout inside the bottom vertical layout
+        self.device_details_layout = QGridLayout()
+        self.device_details_layout.addWidget(device_host_title, 0, 0)
+        self.device_details_layout.addWidget(self.device_host_label, 0, 1)
+        self.device_details_layout.addWidget(ap_ssid_title, 1, 0)
+        self.device_details_layout.addWidget(self.ap_ssid_label, 1, 1)
+        self.device_details_layout.addWidget(mac_address_title, 2, 0)
+        self.device_details_layout.addWidget(self.mac_address_label, 2, 1)
+
+        connect_status_row.addWidget(self.connect_status_icon)
+        connect_status_row.addWidget(self.network_label)
+        if self.is_esp:
+            bottom_row.addLayout(self.device_details_layout)
 
         # Add rows to badge
         badge_layout.addLayout(top_row)
         badge_layout.addLayout(bottom_row)
-
+        
     def set_connected_network(self, ssid):
         self.connected_network = ssid
         if not self.udp_device_id:
@@ -137,8 +182,9 @@ class WifiStatusWidget(QWidget):
         # 1. Band Warning State (Laptop on 5 GHz)
         if self.laptop_on_5ghz:
             label_text = "2.4 GHz Wi-Fi Required"
-            icon_text = ICON_WIFI_CHANNEL
-            icon_color = "#DC2626"
+            connect_status_icon_path = ICON_WIFI_CHANNEL
+            icon_color = text_blue_600
+            badge_color = bg_blue_50
         
         # 2. Connected & Matched State
         elif (
@@ -147,8 +193,9 @@ class WifiStatusWidget(QWidget):
             and self._heartbeat_ssid
         ):
             label_text = self._heartbeat_ssid
-            icon_text = ICON_ONLINE
-            icon_color = "#16a34a"
+            connect_status_icon_path = ICON_WIFI
+            icon_color = text_green_600
+            badge_color = bg_green_50
             
         # 3. Network Mismatch State (Receiving UDP, but SSIDs differ)
         elif (
@@ -156,22 +203,24 @@ class WifiStatusWidget(QWidget):
             and not self.heartbeat_matches_pc
         ):
             label_text = "Network Mismatch"
-            icon_text = ICON_ROUTER_OFF 
-            icon_color = "#DC2626" # Amber tone for mismatch distinction
+            connect_status_icon_path = ICON_ROUTER_OFF 
+            icon_color = text_orange_600
+            badge_color = bg_orange_50
 
         # 4. Disconnected State
         else:
             label_text = "Disconnected"
-            icon_text = ICON_OFFLINE
-            icon_color = "#DC2626"
+            connect_status_icon_path = ICON_OFFLINE
+            icon_color = text_red_600
+            badge_color = bg_red_50
 
         self.network_label.setText(label_text)
-        self.connect_status.setPixmap(
-            load_icon(
-                icon_text,
-                size=STATUS_ICON_SIZE,
-                color=icon_color
-            )
+        
+        # Call the update method instead of re-running init_ui()
+        self.connect_status_icon.update_badge(
+            icon_path=connect_status_icon_path,
+            icon_color=icon_color,
+            badge_color=badge_color
         )
 
     def _handle_device_status(
@@ -210,7 +259,7 @@ class WifiStatusWidget(QWidget):
             print(
                 f"SSID mismatch: "
                 f"PC='{pc_ssid}' "
-                f"{self.device_host}='{esp_ssid}'"
+                f"{self._device_host_val}='{esp_ssid}'"
             )
 
             if not self.showing_mismatch_tooltip:
@@ -325,7 +374,7 @@ class WifiStatusWidget(QWidget):
 
         self.overlay = WifiSetupOverlay(
             system_name=self.system_name,
-            temp_ssid=self.temp_ssid,
+            ap_ssid=self.ap_ssid,
             temp_pw=self.temp_pw,
             target_ssid=target_ssid,
             target_pw=target_pw
