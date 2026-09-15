@@ -1,3 +1,4 @@
 {
-    "python-envs.defaultEnvManager": "ms-python.python:venv"
+    "python-envs.defaultEnvManager": "ms-python.python:venv",
+    "cmake.sourceDirectory": "C:/Users/GUEST USER/Documents/thesis pack/oss_slave/oss_slave"
 }
