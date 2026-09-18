@@ -12,6 +12,8 @@ from load_font_folder import load_font_folder
 from string import Template
 from branding import *
 from new_order import OrderManager
+import threading
+from server import run_server
 
 class MainWindow(QMainWindow):
     """The orchestration window coordinating communication between the Sidebar and Main Panel."""
@@ -22,7 +24,21 @@ class MainWindow(QMainWindow):
     ):
         super().__init__()
         self.setWindowTitle("Automation Pipeline Dashboard")
-        self.resize(1000, 650)
+        
+        # RESPONSIVE SIZING: Get the available screen size dynamically
+        screen = QApplication.primaryScreen().availableGeometry()
+        
+        # Set dimensions relative to the screen (e.g., 85% width and height)
+        responsive_width = int(screen.width() * 0.85)
+        responsive_height = int(screen.height() * 0.85)
+        self.resize(responsive_width, responsive_height)
+        
+        # Center the window on the screen gracefully
+        self.move(
+            int((screen.width() - responsive_width) / 2),
+            int((screen.height() - responsive_height) / 2)
+        )
+
         self.order_queue_position = order_queue_position
         self.navigation_position = navigation_position
 
@@ -82,6 +98,12 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+
+    flask_thread = threading.Thread(
+        target=run_server,
+        daemon=True
+    )
+    flask_thread.start()
     
     load_font_folder("./fonts/Poppins")
     app.setFont(QFont("Poppins", 10))
@@ -96,6 +118,17 @@ def main():
         print("Warning: style.qss file not found. Running with default styles.")
 
     window = MainWindow()
+    screen_geometry = app.primaryScreen().availableGeometry()
+
+    # Resize window to fit screen if it's too big, keeping a safety margin
+    max_width = screen_geometry.width() - 100
+    max_height = screen_geometry.height() - 100
+    
+    # Clamp the window size
+    target_width = min(window.width(), max_width)
+    target_height = min(window.height(), max_height)
+    window.resize(target_width, target_height)
+
     window.show()
     sys.exit(app.exec())
 

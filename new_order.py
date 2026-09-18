@@ -60,6 +60,83 @@ class OrderManager:
         except Exception as e:
             print(f"Failed to create order directory: {e}")
             return None, None
+    
+    def get_order_path(self, order_id):
+        """
+        Find an existing order directory by order ID.
 
+        First checks the currently active order, then the current batch
+        directory, then searches the entire orders root.
+        """
+        if not order_id:
+            return None
+
+        # Fast path: this is the order currently being created/processed.
+        if (
+            self.active_order_id == order_id
+            and self.active_order_path
+            and os.path.isdir(self.active_order_path)
+        ):
+            return self.active_order_path
+
+        # Second: check the current batch directory.
+        batch_directory = self.active_batch_directory
+
+        if os.path.isdir(batch_directory):
+            order_path = os.path.join(batch_directory, order_id)
+
+            if os.path.isdir(order_path):
+                return order_path
+
+        # Final fallback: search all year/month/day directories.
+        if not os.path.isdir(self.orders_root):
+            return None
+
+        for root, dirs, files in os.walk(self.orders_root):
+            if order_id in dirs:
+                order_path = os.path.join(root, order_id)
+
+                if os.path.isdir(order_path):
+                    return order_path
+
+        return None
+
+    def delete_order(self, order_id):
+        """
+        Delete an order directory by order ID.
+
+        Returns True if the order was deleted successfully,
+        otherwise False.
+        """
+        if not order_id:
+            return False
+
+        order_path = self.get_order_path(order_id)
+
+        if order_path is None:
+            print(f"Cannot delete order. Unknown order ID: {order_id}")
+            return False
+
+        try:
+            import shutil
+
+            shutil.rmtree(order_path)
+
+            print(f"Deleted cancelled order: {order_path}")
+
+            # Clear active-order information if this was the active order.
+            if self.active_order_id == order_id:
+                self.active_order_id = None
+                self.active_order_path = None
+
+            return True
+
+        except OSError as error:
+            print(
+                f"Failed to delete order "
+                f"{order_id}: {error}"
+            )
+            return False
+        
 # Shared singleton instance
 order_manager = OrderManager()

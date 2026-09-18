@@ -413,7 +413,7 @@ class WifiStatusWidget(QWidget):
 
         self.overlay = WifiSetupOverlay(
             system_name=self.system_name,
-            ap_ssid=self._ap_ssid_val,
+            temp_ssid=self._ap_ssid_val,
             temp_pw=self.temp_pw,
             target_ssid=target_ssid,
             target_pw=target_pw

@@ -30,7 +30,13 @@ class MainContentWidget(QWidget):
         self.order_queue = self.order_monitoring_tab.order_queue
         self.order_state_updated = self.order_monitoring_tab.order_state_updated
         self.order_state_updated.connect(self._sync_order_widget_state)
-        self.device_monitoring_tab.order_created.connect(self._handle_order_created)
+        self.device_monitoring_tab.order_created.connect(
+            self._handle_order_created
+        )
+
+        self.device_monitoring_tab.order_cancelled.connect(
+            self._handle_order_cancelled
+        )
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(15, 15, 15, 15)
@@ -51,6 +57,11 @@ class MainContentWidget(QWidget):
         self.order_monitoring_tab.handle_order_created(order_id, order_path)
         self.order_queue.scan_active_subdirectories()
 
+    def _handle_order_cancelled(self, order_id):
+        self.order_monitoring_tab.handle_order_cancelled(order_id)
+
+        self.order_queue.scan_active_subdirectories()
+        
     def show_view(self, view_id):
         view_map = {
             "network": self.device_monitoring_tab,

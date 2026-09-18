@@ -20,6 +20,7 @@ from wifi_udp_listener import WifiUdpListener
 
 class DeviceMonitoringTab(QWidget):
     order_created = pyqtSignal(str, str)
+    order_cancelled = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -70,7 +71,7 @@ class DeviceMonitoringTab(QWidget):
             system_name="Left Camera", axis="Y", mac_address="28:84:85:a0:c2:9c"
         )
         self.oss_slave_z_widget = SlaveMacWidget(
-            system_name="Top Camera", axis="Z", mac_address="84:fc:e6:68:41:28"
+            system_name="Top Camera", axis="Z", mac_address="84:fc:e6:5f:6f:cc"
         )
         self.cnc_widget = WifiStatusWidget(
             system_name="Cutting and Creasing Plotter", icon_path=ICON_BOX, temp_pw="SST@2002",
@@ -99,6 +100,7 @@ class DeviceMonitoringTab(QWidget):
         self.udp_listener = WifiUdpListener()
         self.udp_listener.status_received.connect(self.handle_udp_status)
         self.udp_listener.order_triggered.connect(self.handle_order_pressed)
+        self.udp_listener.order_cancelled.connect(self.handle_order_cancelled)
         self.oss_master_status_widget.device_online_changed.connect(
             lambda online: self.handle_device_online_changed("oss-master", online)
         )
@@ -251,6 +253,23 @@ class DeviceMonitoringTab(QWidget):
             self.order_created.emit(order_id, order_path)
             print(f"Ready to accept slave camera uploads at: {order_path}")
 
+    def handle_order_cancelled(self, device_name, payload):
+        order_id = payload.get("order_id")
+
+        if not order_id:
+            print("Received order cancellation without order ID.")
+            return
+
+        print(
+            f"Order cancellation received from "
+            f"{device_name}: {order_id}"
+        )
+
+        deleted = OrderManager().delete_order(order_id)
+
+        if deleted:
+            self.order_cancelled.emit(order_id)
+            
     def close(self):
         self.clear_wifi_band_tooltip()
         if hasattr(self, "network_monitor"):

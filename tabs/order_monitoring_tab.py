@@ -52,6 +52,32 @@ class OrderMonitoringTab(QWidget):
         self.tab_stack.setCurrentIndex(0)
         self.pipeline_stepper.update_step_visuals(0)
 
+
+    def handle_order_cancelled(self, order_id):
+        """
+        Clear the currently displayed order after the Master
+        reports that the order was cancelled.
+        """
+        if self.current_order_id != order_id:
+            return
+
+        self.current_order_id = None
+        self.current_order_directory = None
+
+        self.sim_timer.stop()
+
+        self.display_label.setText(
+            "Order cancelled. Ready for the next order."
+        )
+
+        self.pipeline_stepper.update_step_visuals(0)
+        self.tab_stack.setCurrentIndex(0)
+
+        # Clear captured photos and restore waiting labels.
+        for role, label in self.capture_photo_labels:
+            label.clear()
+            label.setText(f"Waiting for {role} camera")
+            
     def refresh_current_order(self):
         if not self.current_order_id or not self.current_order_directory:
             return

@@ -6,8 +6,10 @@ from PyQt6.QtNetwork import QHostAddress, QUdpSocket
 UDP_STATUS_PORT = 4210
 
 class WifiUdpListener(QObject):
+
     status_received = pyqtSignal(str, bool, object)  # device, connected, ssid
     order_triggered = pyqtSignal(str, dict)            # device name, event payload
+    order_cancelled = pyqtSignal(str, dict)
 
     def __init__(self, port=UDP_STATUS_PORT, parent=None):
         super().__init__(parent)
@@ -41,19 +43,35 @@ class WifiUdpListener(QObject):
                 continue
 
             device = payload.get("device")
+
             if not device:
                 print("Ignored UDP datagram without device id:", payload)
                 continue
 
             # Send ACK so ESP32 learns this machine's IP address
             if device == "oss-master":
-                ack = json.dumps({"type": "discovery_ack"}).encode("utf-8")
-                self.socket.writeDatagram(ack, sender_addr, sender_port)
+                print(
+                    f"OSS-MASTER discovered at {sender_addr}:{sender_port}. "
+                    "Sending discovery ACK."
+                )
+
+                ack = json.dumps({
+                    "type": "discovery_ack"
+                }).encode("utf-8")
+
+                self.socket.writeDatagram(
+                    ack,
+                    sender_addr,
+                    sender_port
+                )
 
             # 1. Handle Event Notifications
             if payload.get("event") == "order_button_pressed":
-                print(f"UDP order notification received from device={device}")
                 self.order_triggered.emit(str(device), payload)
+                continue
+
+            if payload.get("event") == "order_cancelled":
+                self.order_cancelled.emit(str(device), payload)
                 continue
 
             # 2. Handle Status Heartbeats
