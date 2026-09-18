@@ -3,7 +3,7 @@ QWidget#MainWindow {
 }
 
 QFrame#Sidebar {
-    background-color: #166534;
+    background-color: $bg_brand_dark;
     border: none;
     border-radius: 5px;
     margin: 10px;

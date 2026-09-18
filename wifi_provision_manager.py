@@ -2,6 +2,7 @@ from PyQt6.QtCore import pyqtSignal, QObject
 import time
 import requests
 import subprocess
+from pathlib import Path
 from read_pc_ssid import read_pc_ssid
 
 class WifiProvisionManager(QObject):
@@ -79,12 +80,12 @@ class WifiProvisionManager(QObject):
     </WLANProfile>
     """
 
-            profile_path = (
-                f"{ssid}_profile.xml"
-            )
+            profile_directory = Path(__file__).resolve().parent / "wifi_profiles"
+            profile_directory.mkdir(exist_ok=True)
+            profile_path = profile_directory / f"{ssid}_profile.xml"
 
             with open(
-                profile_path,
+                str(profile_path),
                 "w",
                 encoding="utf-8"
             ) as file:

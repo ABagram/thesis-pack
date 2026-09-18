@@ -1,0 +1,1 @@
+"""Application tabs shown in the main content area."""

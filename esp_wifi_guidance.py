@@ -25,7 +25,7 @@ def show_esp_wifi_guidance(
     tooltip = AnchoredTooltip(
         content=content,
         target=widget,
-        position="down",
+        position="right",
     )
 
     parent.esp_wifi_tooltips[widget] = tooltip

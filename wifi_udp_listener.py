@@ -5,9 +5,9 @@ from PyQt6.QtNetwork import QHostAddress, QUdpSocket
 
 UDP_STATUS_PORT = 4210
 
-
 class WifiUdpListener(QObject):
-    status_received = pyqtSignal(str, bool, object)
+    status_received = pyqtSignal(str, bool, object)  # device, connected, ssid
+    order_triggered = pyqtSignal(str, dict)            # device name, event payload
 
     def __init__(self, port=UDP_STATUS_PORT, parent=None):
         super().__init__(parent)
@@ -26,9 +26,7 @@ class WifiUdpListener(QObject):
                 f"{self.socket.errorString()}"
             )
 
-        print(
-            f"UDP heartbeat listener active on IPv4 port {port}"
-        )
+        print(f"UDP listener active on IPv4 port {port}")
 
     def _read_pending_datagrams(self):
         while self.socket.hasPendingDatagrams():
@@ -36,32 +34,37 @@ class WifiUdpListener(QObject):
             sender_addr = datagram.senderAddress()
             sender_port = datagram.senderPort()
 
-            print(f"UDP datagram received from {sender_addr.toString()}")
-
             try:
                 payload = json.loads(bytes(datagram.data()).decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
-                print("Ignored malformed UDP heartbeat")
+                print("Ignored malformed UDP datagram")
                 continue
 
             device = payload.get("device")
             if not device:
-                print("Ignored UDP heartbeat without device id:", payload)
+                print("Ignored UDP datagram without device id:", payload)
                 continue
 
-            print(
-                f"UDP heartbeat accepted: device={device}, "
-                f"connected={payload.get('connected')}, "
-                f"ssid={payload.get('ssid')}"
-            )
-
-            # Reply so the master learns our current IP (no hardcoding needed)
+            # Send ACK so ESP32 learns this machine's IP address
             if device == "oss-master":
                 ack = json.dumps({"type": "discovery_ack"}).encode("utf-8")
                 self.socket.writeDatagram(ack, sender_addr, sender_port)
 
-            self.status_received.emit(
-                str(device),
-                bool(payload.get("connected", False)),
-                payload.get("ssid"),
-            )
+            # 1. Handle Event Notifications
+            if payload.get("event") == "order_button_pressed":
+                print(f"UDP order notification received from device={device}")
+                self.order_triggered.emit(str(device), payload)
+                continue
+
+            # 2. Handle Status Heartbeats
+            if "connected" in payload:
+                print(
+                    f"UDP heartbeat accepted: device={device}, "
+                    f"connected={payload.get('connected')}, "
+                    f"ssid={payload.get('ssid')}"
+                )
+                self.status_received.emit(
+                    str(device),
+                    bool(payload.get("connected", False)),
+                    payload.get("ssid"),
+                )

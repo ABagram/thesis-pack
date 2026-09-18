@@ -43,15 +43,53 @@ const IPAddress STATUS_LAPTOP_IP(192, 168, 0, 139);
 TFT_eSPI tft = TFT_eSPI();
 
 typedef struct {
-    uint8_t msgType;      // 0 = creds, 1 = trigger
+    uint8_t msgType;      // 0 = creds, 1 = order start, 2 = capture grant, 3 = capture complete
     char ssid[32];
     char pass[64];
     char laptopIp[16];
+    char orderId[32];
+    char role[8];
 } EspNowPacket;
 
 uint8_t broadcastAddr[] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
 IPAddress laptopIp;
 bool haveLaptopIp = false;
+char activeOrderId[32] = "";
+bool captureInProgress = false;
+bool captureBackComplete = false;
+bool captureSideComplete = false;
+bool captureTopComplete = false;
+uint8_t captureStep = 0;
+
+bool lastBackComplete = false;
+bool lastSideComplete = false;
+bool lastTopComplete = false;
+
+void sendCaptureGrant(const char* role);
+
+void onEspNowDataReceived(const esp_now_recv_info *info, const uint8_t *incomingData, int len) {
+    if (len < sizeof(EspNowPacket)) return;
+
+    EspNowPacket packet;
+    memcpy(&packet, incomingData, sizeof(packet));
+    if (packet.msgType != 3 || !captureInProgress) return;
+    if (strncmp(packet.orderId, activeOrderId, sizeof(activeOrderId)) != 0) return;
+
+    if (strcmp(packet.role, "back") == 0) {
+        captureBackComplete = true;
+        Serial.println("CONFIRMATION RECEIVED: BACK");
+    }
+
+    if (strcmp(packet.role, "side") == 0) {
+        captureSideComplete = true;
+        Serial.println("CONFIRMATION RECEIVED: SIDE");
+    }
+
+    if (strcmp(packet.role, "top") == 0) {
+        captureTopComplete = true;
+        Serial.println("CONFIRMATION RECEIVED: TOP");
+    }
+}
 
 void showConnectedScreen() {
     tft.fillScreen(TFT_BLACK);
@@ -63,6 +101,58 @@ void showConnectedScreen() {
     tft.drawString("SSID: " + WiFi.SSID(), 20, 100);
     tft.drawString("IP: " + WiFi.localIP().toString(), 20, 140);
     tft.drawString("Host: OSS-MASTER.local", 20, 180);
+}
+
+void showCaptureScreen() {
+    tft.fillScreen(TFT_BLACK);
+
+    tft.setTextSize(2);
+
+    tft.setTextColor(TFT_YELLOW);
+    tft.drawString("OSS MASTER", 20, 20);
+
+    tft.setTextColor(TFT_WHITE);
+    tft.drawString("Order Capture", 20, 55);
+    tft.drawString(String(activeOrderId), 20, 85);
+
+    tft.setTextColor(TFT_WHITE);
+    tft.drawString("Camera Uploads:", 20, 120);
+
+    // Back
+    tft.setTextColor(captureBackComplete ? TFT_GREEN : TFT_RED);
+    tft.drawString(
+        captureBackComplete ? "BACK:    DONE" : "BACK:    WAITING",
+        20, 150
+    );
+
+    // Side
+    tft.setTextColor(captureSideComplete ? TFT_GREEN : TFT_RED);
+    tft.drawString(
+        captureSideComplete ? "SIDE:    DONE" : "SIDE:    WAITING",
+        20, 180
+    );
+
+    // Top
+    tft.setTextColor(captureTopComplete ? TFT_GREEN : TFT_RED);
+    tft.drawString(
+        captureTopComplete ? "TOP:     DONE" : "TOP:     WAITING",
+        20, 210
+    );
+}
+
+void updateCaptureScreenIfNeeded() {
+    if (!captureInProgress) return;
+
+    if (captureBackComplete != lastBackComplete ||
+        captureSideComplete != lastSideComplete ||
+        captureTopComplete != lastTopComplete) {
+
+        lastBackComplete = captureBackComplete;
+        lastSideComplete = captureSideComplete;
+        lastTopComplete = captureTopComplete;
+
+        showCaptureScreen();
+    }
 }
 
 void showPortalScreen(int secondsLeft) {
@@ -125,7 +215,31 @@ void broadcastCreds() {
 void broadcastTrigger() {
     EspNowPacket pkt = {};
     pkt.msgType = 1;
+    strncpy(pkt.orderId, activeOrderId, sizeof(pkt.orderId) - 1);
     esp_now_send(broadcastAddr, (uint8_t*)&pkt, sizeof(pkt));
+}
+
+void sendCaptureGrant(const char* role) {
+    EspNowPacket pkt = {};
+    pkt.msgType = 2;
+    strncpy(pkt.orderId, activeOrderId, sizeof(pkt.orderId) - 1);
+    strncpy(pkt.role, role, sizeof(pkt.role) - 1);
+    esp_now_send(broadcastAddr, (uint8_t*)&pkt, sizeof(pkt));
+}
+
+void advanceCaptureSequence() {
+    if (!captureInProgress) return;
+
+    if (captureStep == 1 && captureBackComplete) {
+        captureStep = 2;
+        sendCaptureGrant("side");
+    } else if (captureStep == 2 && captureSideComplete) {
+        captureStep = 3;
+        sendCaptureGrant("top");
+    } else if (captureStep == 3 && captureTopComplete) {
+        captureInProgress = false;
+        showConnectedScreen();
+    }
 }
 
 void setup() {
@@ -171,6 +285,7 @@ void setup() {
     statusUdp.begin(STATUS_UDP_PORT);
     startNetworkServices();
     setupEspNow();
+    esp_now_register_recv_cb(onEspNowDataReceived);
     showConnectedScreen();
 }
 
@@ -194,6 +309,8 @@ void checkForLaptopAck() {
 
 void loop()
 {
+    advanceCaptureSequence();
+    updateCaptureScreenIfNeeded();
     checkForLaptopAck();
     server.handleClient();
     broadcastStatus();
@@ -236,6 +353,7 @@ void loop()
 
             startNetworkServices();
             setupEspNow();
+            esp_now_register_recv_cb(onEspNowDataReceived);
 
             if (WiFi.status() == WL_CONNECTED)
                 showConnectedScreen();
@@ -302,8 +420,41 @@ void loop()
 
     bool orderState = digitalRead(CREATE_ORDER_PIN);
     if (createOrderLastState == HIGH && orderState == LOW) {
+        if (captureInProgress) {
+            createOrderLastState = orderState;
+            return;
+        }
+
+        snprintf(activeOrderId, sizeof(activeOrderId), "order_%lu", millis());
+        captureInProgress = true;
+
+        captureBackComplete = false;
+        captureSideComplete = false;
+        captureTopComplete = false;
+
+        lastBackComplete = false;
+        lastSideComplete = false;
+        lastTopComplete = false;
+        
+        captureStep = 1;
+
+        showCaptureScreen();
         Serial.println("Order button pressed - triggering capture");
         broadcastTrigger();
+        sendCaptureGrant("back");
+        
+        DynamicJsonDocument eventDoc(128);
+        eventDoc["device"] = "oss-master";
+        eventDoc["event"] = "order_button_pressed";
+        eventDoc["order_id"] = activeOrderId;
+        
+        String eventPayload;
+        serializeJson(eventDoc, eventPayload);
+
+        statusUdp.beginPacket(haveLaptopIp ? laptopIp : STATUS_LAPTOP_IP, STATUS_UDP_PORT);
+        statusUdp.print(eventPayload);
+        statusUdp.endPacket();
+
     }
     createOrderLastState = orderState;
 }

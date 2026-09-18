@@ -191,9 +191,16 @@ class NavigationSidebar(QFrame):
 
         self.add_view(
             "pipeline",
-            "icons/package_2.svg",
+            "icons/order_approve.svg",
             "View order queue and order status",
             "Orders",
+        )
+
+        self.add_view(
+            "custom",
+            "icons/package_2.svg",
+            "Define custom box",
+            "Custom Box"
         )
 
         self._buttons["network"].setChecked(True)
