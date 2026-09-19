@@ -24,6 +24,8 @@ const int BL_CHANNEL = 0;
 const int BL_FREQ = 5000;
 const int BL_RESOLUTION = 8;
 
+extern bool basicScreenDrawn;
+
 // wifi related variables
 unsigned long wifiLostTime = 0;
 bool wifiLost = false;
@@ -46,7 +48,9 @@ const IPAddress STATUS_LAPTOP_IP(192, 168, 0, 139);
 TFT_eSPI tft = TFT_eSPI();
 
 typedef struct {
-    uint8_t msgType;
+    uint8_t msgType;      // 0=creds, 1=order, 2=cap_req, 3=cap_done, 4=up_req, 5=up_done, 6=cap_ack, 7=up_ack, 8=cancel, 9=heartbeat
+    uint8_t channel;      // Current Wi-Fi channel of Master
+    bool wifiConnected;   // True if slave is currently connected to Wi-Fi
     char ssid[32];
     char pass[64];
     char laptopIp[16];
@@ -101,6 +105,17 @@ const unsigned long FINISH_SCREEN_DURATION = 3000;
 bool finishScreenActive = false;
 unsigned long finishScreenStartTime = 0;
 
+struct SlaveStatus {
+    unsigned long lastSeen;
+    bool wifiConnected;
+};
+
+SlaveStatus backStatus = {0, false};
+SlaveStatus sideStatus = {0, false};
+SlaveStatus topStatus  = {0, false};
+
+volatile bool needDisplayRefresh = false;
+
 void sendCaptureAck(const char* role) {
 
     EspNowPacket pkt = {};
@@ -150,8 +165,33 @@ void onEspNowDataReceived(
 
     memcpy(&packet, incomingData, sizeof(packet));
 
-    // Ignore messages from another order
+    // --------------------------------------------------------
+    // 1. HANDLE SYSTEM STATUS / READY PACKETS FIRST (NO ORDER ID REQUIRED)
+    // --------------------------------------------------------
+    if (packet.msgType == 9) {
+    SlaveStatus* target = nullptr;
+    if (strcmp(packet.role, "back") == 0) target = &backStatus;
+    else if (strcmp(packet.role, "side") == 0) target = &sideStatus;
+    else if (strcmp(packet.role, "top") == 0) target = &topStatus;
 
+    if (target) {
+        bool pwrWasOn = (target->lastSeen > 0) && (millis() - target->lastSeen < 10000);
+        bool wifiWasOn = target->wifiConnected;
+
+        target->lastSeen = millis();
+        target->wifiConnected = packet.wifiConnected;
+
+        // Refresh only if power or wifi state toggled
+        if ((!pwrWasOn || wifiWasOn != packet.wifiConnected) && orderState == READY_FOR_ORDER) {
+            needDisplayRefresh = true;
+        }
+    }
+    return;
+}
+
+    // --------------------------------------------------------
+    // 2. IGNORE MESSAGES FROM OTHER ORDERS
+    // --------------------------------------------------------
     if (
         strcmp(packet.orderId, activeOrderId) != 0
     ) {
@@ -159,7 +199,6 @@ void onEspNowDataReceived(
     }
 
     // capture complete
-
     if (packet.msgType == 3) {
 
         Serial.printf("CAPTURE COMPLETE RECEIVED: %s\n", packet.role);
@@ -193,7 +232,6 @@ void onEspNowDataReceived(
     }
 
     // upload complete
-
     else if (packet.msgType == 5) {
 
         Serial.printf("UPLOAD COMPLETE RECEIVED: %s\n", packet.role);
@@ -257,12 +295,36 @@ void showConnectedScreen() {
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_GREEN);
     tft.setTextSize(2);
-    tft.drawString("OSS MASTER", 20, 20);
+    tft.drawString("OSS MASTER", 10, 5);
+    
     tft.setTextColor(TFT_WHITE);
-    tft.drawString("Status: Connected", 20, 60);
-    tft.drawString("SSID: " + WiFi.SSID(), 20, 100);
-    tft.drawString("IP: " + WiFi.localIP().toString(), 20, 140);
-    tft.drawString("Host: OSS-MASTER.local", 20, 180);
+    tft.setTextSize(2);
+    tft.drawString("SSID: " + WiFi.SSID().substring(0, 10), 10, 30);
+    tft.drawString("IP:   " + WiFi.localIP().toString(), 10, 55);
+
+    // 2 Column Header
+    tft.setTextColor(TFT_YELLOW);
+    tft.drawString("CAM   PWR   WIFI", 10, 90);
+    tft.drawString("----------------", 10, 105);
+    
+    auto drawSlaveRow = [](const char* name, const SlaveStatus& status, int y) {
+        bool powered = (status.lastSeen > 0) && (millis() - status.lastSeen < 10000);
+        
+        tft.setTextColor(TFT_WHITE);
+        tft.drawString(name, 10, y);
+        
+        // Column 1: Power Status
+        tft.setTextColor(powered ? TFT_GREEN : TFT_RED);
+        tft.drawString(powered ? "ON " : "OFF", 90, y);
+        
+        // Column 2: Wi-Fi Connection Status
+        tft.setTextColor(status.wifiConnected ? TFT_GREEN : TFT_RED);
+        tft.drawString(status.wifiConnected ? "OK " : "NC ", 170, y);
+    };
+
+    drawSlaveRow("BACK", backStatus, 130);
+    drawSlaveRow("SIDE", sideStatus, 160);
+    drawSlaveRow("TOP ", topStatus,  190);
 }
 
 void showOrderCreatedScreen() {
@@ -947,9 +1009,13 @@ void processCaptureRetries() {
 }
 
 void showPortalScreen(int secondsLeft) {
-    // Only draw the background text once to prevent screen flickering
     static bool basicScreenDrawn = false;
     
+    // Reset background draw flag if starting new portal session or timed out
+    if (secondsLeft == timeoutDuration || secondsLeft <= 0) {
+        basicScreenDrawn = false;
+    }
+
     if (!basicScreenDrawn) {
         tft.fillScreen(TFT_BLACK);
         tft.setTextColor(TFT_YELLOW);
@@ -964,17 +1030,12 @@ void showPortalScreen(int secondsLeft) {
         basicScreenDrawn = true;
     }
 
-    // Erase only the previous timer area using a black rectangle
+    // Erase only the previous timer area
     tft.fillRect(20, 220, 280, 30, TFT_BLACK); 
     
-    // Draw the active countdown
+    // Draw active countdown
     tft.setTextColor(TFT_RED);
     tft.drawString("Timeout in: " + String(secondsLeft) + "s", 20, 220);
-
-    // Reset the static flag when time runs out or finishes so it can be drawn next time
-    if (secondsLeft <= 0) {
-        basicScreenDrawn = false;
-    }
 }
 
 void setupEspNow() {
@@ -994,53 +1055,22 @@ void setupEspNow() {
 }
 
 void broadcastCreds() {
-    Serial.print("broadcastCreds() - haveLaptopIp: ");
-    Serial.println(haveLaptopIp ? "YES" : "NO");
 
-    IPAddress destinationLaptopIp =
-        haveLaptopIp ? laptopIp : STATUS_LAPTOP_IP;
-
-    Serial.print("Laptop IP being sent to slaves: ");
-    Serial.println(destinationLaptopIp);
-
-    if (WiFi.status() != WL_CONNECTED)
-        return;
-
+    if (WiFi.status() != WL_CONNECTED)return;
+ 
     EspNowPacket pkt = {};
+    
     pkt.msgType = 0;
+    
+    pkt.channel = WiFi.channel();
 
-    strncpy(
-        pkt.ssid,
-        WiFi.SSID().c_str(),
-        sizeof(pkt.ssid) - 1
-    );
+    strncpy(pkt.ssid, WiFi.SSID().c_str(), sizeof(pkt.ssid) - 1);
+    strncpy(pkt.pass, WiFi.psk().c_str(), sizeof(pkt.pass) - 1);
 
-    strncpy(
-        pkt.pass,
-        WiFi.psk().c_str(),
-        sizeof(pkt.pass) - 1
-    );
+    IPAddress destinationLaptopIp = haveLaptopIp ? laptopIp : STATUS_LAPTOP_IP;
+    strncpy(pkt.laptopIp, destinationLaptopIp.toString().c_str(), sizeof(pkt.laptopIp) - 1);
 
-    strncpy(
-        pkt.laptopIp,
-        destinationLaptopIp.toString().c_str(),
-        sizeof(pkt.laptopIp) - 1
-    );
-
-    esp_err_t result = esp_now_send(
-        broadcastAddr,
-        (uint8_t*)&pkt,
-        sizeof(pkt)
-    );
-
-    if (result == ESP_OK) {
-        Serial.println("UPDATED CREDENTIALS SENT TO SLAVES");
-    } else {
-        Serial.printf(
-            "FAILED TO SEND UPDATED CREDENTIALS: 0x%x\n",
-            result
-        );
-    }
+    esp_err_t result = esp_now_send(broadcastAddr, (uint8_t*)&pkt, sizeof(pkt));
 }
 
 void broadcastNewOrder() {
@@ -1200,6 +1230,7 @@ void startSetupPortal()
     wm.setConfigPortalTimeout(timeoutDuration);
     wm.setBreakAfterConfig(true);
 
+    // Force basicScreenDrawn reset by calling showPortalScreen with reset or resetting flag
     showPortalScreen(timeoutDuration);
 
     Serial.println("Starting AP Portal: OSS_MASTER_SETUP_AP");
@@ -1498,11 +1529,22 @@ void setup() {
     startNetworkServices();
     setupEspNow();
     esp_now_register_recv_cb(onEspNowDataReceived);
+    broadcastCreds();
     showConnectedScreen();
 }
 
 void loop()
 {
+    // --------------------------------------------------------
+    // INSTANT DISPLAY REFRESH
+    // --------------------------------------------------------
+    if (needDisplayRefresh) {
+        needDisplayRefresh = false;
+        if (orderState == READY_FOR_ORDER) {
+            showConnectedScreen();
+        }
+    }
+    
     processFinishScreen();
 
     processCaptureSequence();
@@ -1511,66 +1553,87 @@ void loop()
     server.handleClient();
     broadcastStatus();
 
+    static unsigned long lastPowerCheck = 0;
+    if (orderState == READY_FOR_ORDER && millis() - lastPowerCheck >= 1000) {
+        lastPowerCheck = millis();
+        
+        unsigned long now = millis();
+        // 3-second heartbeat timeout threshold
+        bool backOn  = (backStatus.lastSeen > 0)  && (now - backStatus.lastSeen < 3000);
+        bool sideOn  = (sideStatus.lastSeen > 0)  && (now - sideStatus.lastSeen < 3000);
+        bool topOn   = (topStatus.lastSeen > 0)   && (now - topStatus.lastSeen < 3000);
+
+        bool backWifi = backOn && backStatus.wifiConnected;
+        bool sideWifi = sideOn && sideStatus.wifiConnected;
+        bool topWifi  = topOn  && topStatus.wifiConnected;
+
+        static bool pBackOn = false, pSideOn = false, pTopOn = false;
+        static bool pBackWifi = false, pSideWifi = false, pTopWifi = false;
+
+        // Trigger display refresh immediately if power or Wi-Fi state toggles
+        if (backOn != pBackOn || sideOn != pSideOn || topOn != pTopOn ||
+            backWifi != pBackWifi || sideWifi != pSideWifi || topWifi != pTopWifi) {
+            
+            pBackOn = backOn; pSideOn = sideOn; pTopOn = topOn;
+            pBackWifi = backWifi; pSideWifi = sideWifi; pTopWifi = topWifi;
+            
+            needDisplayRefresh = true;
+        }
+    }
+
+    // ============================================================
+    // PERIODIC CREDENTIAL BROADCAST (NEW)
+    // ============================================================
+    // Re-broadcast Wi-Fi credentials every 5 seconds when idle
+    // so any newly booted slaves can receive them.
+    static unsigned long lastCredsBroadcast = 0;
+    if (orderState == READY_FOR_ORDER && WiFi.status() == WL_CONNECTED) {
+        if (millis() - lastCredsBroadcast >= 5000) {
+            lastCredsBroadcast = millis();
+            broadcastCreds();
+        }
+    }
+    // ============================================================
+
     if (portalRunning)
     {
         bool cancelState = digitalRead(CANCEL_PIN);
 
-        if (
-            cancelLastState == HIGH &&
-            cancelState == LOW
-        ) {
-
-            Serial.println(
-                "CANCEL button pressed during WiFi setup."
-            );
+        if (cancelLastState == HIGH && cancelState == LOW) {
+            Serial.println("CANCEL button pressed during WiFi setup.");
 
             wm.stopConfigPortal();
-
             portalRunning = false;
 
             enterStationMode();
-
             WiFi.begin();
 
-            Serial.println(
-                "Exiting WiFi setup. Reconnecting to saved network..."
-            );
+            Serial.println("Exiting WiFi setup. Reconnecting to saved network...");
+            showConnectedScreen(); // Force screen redraw on cancel
         }
 
         cancelLastState = cancelState;
-
         wm.process();
 
         static unsigned long lastScreenUpdate = 0;
-
         if (millis() - lastScreenUpdate >= 1000)
         {
             lastScreenUpdate = millis();
-
             int remaining = timeoutDuration - ((millis() - portalStartTime) / 1000);
-
-            if (remaining < 0)
-                remaining = 0;
-
+            if (remaining < 0) remaining = 0;
             showPortalScreen(remaining);
         }
 
         if (!wm.getConfigPortalActive())
         {
             Serial.println("Portal closed.");
-
             portalRunning = false;
 
             enterStationMode();
-
             WiFi.begin();
 
             unsigned long start = millis();
-
-            while (
-                WiFi.status() != WL_CONNECTED &&
-                millis() - start < 15000
-            )
+            while (WiFi.status() != WL_CONNECTED && millis() - start < 15000)
             {
                 delay(200);
             }
@@ -1580,14 +1643,14 @@ void loop()
             esp_now_register_recv_cb(onEspNowDataReceived);
 
             if (WiFi.status() == WL_CONNECTED) {
-
                 Serial.println("Wi-Fi configuration successful.");
                 Serial.println("Broadcasting updated credentials to camera slaves...");
-
                 broadcastCreds();
-
-                showConnectedScreen();
             }
+
+            // ALWAYS redraw main screen when portal finishes
+            needDisplayRefresh = false;
+            showConnectedScreen(); 
         }
         return;
     }

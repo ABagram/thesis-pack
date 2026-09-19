@@ -1,4 +1,5 @@
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <esp_now.h>
 #include "esp_mac.h"
 #include <HTTPClient.h>
@@ -33,21 +34,14 @@
 // ============================================================
 
 typedef struct {
-
-    uint8_t msgType;      // 0 = creds, 1 = new order, 2 = capture request,
-                      // 3 = capture complete, 4 = upload request/retry,
-                      // 5 = upload complete, 6 = capture ACK,
-                      // 7 = upload ACK, 8 = order cancelled
-
+    uint8_t msgType;      // 0=creds, 1=order, 2=cap_req, 3=cap_done, 4=up_req, 5=up_done, 6=cap_ack, 7=up_ack, 8=cancel, 9=heartbeat
+    uint8_t channel;      // Current Wi-Fi channel of Master
+    bool wifiConnected;   // True if slave is currently connected to Wi-Fi
     char ssid[32];
     char pass[64];
-
     char laptopIp[16];
-
     char orderId[32];
-
     char role[8];
-
 } EspNowPacket;
 
 
@@ -75,12 +69,13 @@ String myRole = "unknown";
 // WIFI INFORMATION
 // ============================================================
 
+bool hasCredentials = false;
+volatile bool credentialsPending = false;
+
 char savedSsid[32] = "";
 char savedPass[64] = "";
 char savedLaptopIp[16] = "";
-
-bool hasCredentials = false;
-
+uint8_t savedChannel = 0;
 
 // ============================================================
 // ORDER STATE
@@ -163,47 +158,14 @@ void identifySelf() {
 // ============================================================
 
 void sendStatus(uint8_t msgType) {
-
     EspNowPacket pkt = {};
-
     pkt.msgType = msgType;
+    pkt.wifiConnected = (WiFi.status() == WL_CONNECTED);
 
-    strncpy(
-        pkt.orderId,
-        activeOrderId,
-        sizeof(pkt.orderId) - 1
-    );
+    strncpy(pkt.orderId, activeOrderId, sizeof(pkt.orderId) - 1);
+    strncpy(pkt.role, myRole.c_str(), sizeof(pkt.role) - 1);
 
-    strncpy(
-        pkt.role,
-        myRole.c_str(),
-        sizeof(pkt.role) - 1
-    );
-
-    esp_err_t result = esp_now_send(
-        broadcastAddr,
-        (uint8_t*)&pkt,
-        sizeof(pkt)
-    );
-
-    if (result == ESP_OK) {
-
-        Serial.printf(
-            "ESP-NOW STATUS SENT: type=%d role=%s order=%s\n",
-            msgType,
-            pkt.role,
-            pkt.orderId
-        );
-
-    } else {
-
-        Serial.printf(
-            "ESP-NOW STATUS SEND FAILED: type=%d error=0x%x\n",
-            msgType,
-            result
-        );
-
-    }
+    esp_now_send(broadcastAddr, (uint8_t*)&pkt, sizeof(pkt));
 }
 
 // ============================================================
@@ -211,75 +173,28 @@ void sendStatus(uint8_t msgType) {
 // ============================================================
 
 bool connectToWiFi() {
+    if (!hasCredentials || strlen(savedSsid) == 0) return false;
 
-    if (!hasCredentials) {
-        Serial.println("WIFI CONNECT FAILED: no credentials.");
-        return false;
-    }
-
-    if (strlen(savedSsid) == 0) {
-        Serial.println("WIFI CONNECT FAILED: SSID is empty.");
-        return false;
-    }
-
-    // Already connected
     if (WiFi.status() == WL_CONNECTED) {
-
-        Serial.println("WIFI ALREADY CONNECTED");
-
-        Serial.print("Slave IP: ");
-        Serial.println(WiFi.localIP());
-
+        sendStatus(9);
         return true;
     }
 
-    Serial.println();
-    Serial.println("================================");
-    Serial.println("CONNECTING TO WIFI");
-    Serial.println("================================");
+    Serial.println("CONNECTING TO WIFI (FAST SCAN)...");
 
-    Serial.print("SSID: ");
-    Serial.println(savedSsid);
-
+    // Enable Fast Scan mode: stops immediately on matching SSID
+    WiFi.setScanMethod(WIFI_FAST_SCAN);
+    WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
+    
+    // Begin connection without forcing a static channel
     WiFi.begin(savedSsid, savedPass);
 
     unsigned long startTime = millis();
-
-    while (
-        WiFi.status() != WL_CONNECTED &&
-        millis() - startTime < 15000
-    ) {
-
-        delay(250);
-        Serial.print(".");
+    while (WiFi.status() != WL_CONNECTED && millis() - startTime < 10000) {
+        delay(100);
     }
 
-    Serial.println();
-
-    if (WiFi.status() == WL_CONNECTED) {
-
-        Serial.println("WIFI CONNECTED");
-
-        Serial.print("Slave IP: ");
-        Serial.println(WiFi.localIP());
-
-        Serial.print("Gateway: ");
-        Serial.println(WiFi.gatewayIP());
-
-        Serial.print("Subnet: ");
-        Serial.println(WiFi.subnetMask());
-
-        Serial.println("================================");
-
-        return true;
-    }
-
-    Serial.print("WIFI CONNECTION FAILED. Status: ");
-    Serial.println(WiFi.status());
-
-    Serial.println("================================");
-
-    return false;
+    return (WiFi.status() == WL_CONNECTED);
 }
 
 // ============================================================
@@ -322,6 +237,7 @@ void onDataRecv(
 
     if (pkt.msgType == 0) {
 
+        savedChannel = pkt.channel;
         strncpy(
             savedSsid,
             pkt.ssid,
@@ -351,13 +267,11 @@ void onDataRecv(
         Serial.println("]");
 
         hasCredentials = true;
+        credentialsPending = true;
 
         Serial.println(
             "Received updated Wi-Fi credentials."
         );
-
-        // Actually connect to the Wi-Fi network.
-        connectToWiFi();
 
         return;
     }
@@ -1117,39 +1031,65 @@ void setup() {
 void loop() {
 
     // --------------------------------------------------------
-    // CAPTURE REQUEST
+    // 1. ESP-NOW CHANNEL HOPPING (ONLY WHEN UNCONFIGURED)
     // --------------------------------------------------------
-
-    if (captureRequested) {
-
-        captureRequested = false;
-
-        bool success =
-            captureImageAndUpload();
-
-        if (!success) {
-
-            Serial.println(
-                "Capture/upload operation failed."
-            );
-
+    // Hop channels only if no credentials have been received yet.
+    // Once credentials/channel are saved, stop hopping to keep radio stable.
+    static unsigned long lastChannelHop = 0;
+    if (!hasCredentials && !credentialsPending) {
+        if (millis() - lastChannelHop >= 150) {
+            lastChannelHop = millis();
+            static uint8_t primaryChan = 1;
+            primaryChan = (primaryChan % 13) + 1;
+            esp_wifi_set_channel(primaryChan, WIFI_SECOND_CHAN_NONE);
         }
-
     }
 
+    // --------------------------------------------------------
+    // 2. CONNECT / RECONNECT TO WIFI
+    // --------------------------------------------------------
+    // Handles initial connection and retries if Wi-Fi drops during operation.
+    static unsigned long lastReconnectAttempt = 0;
+    if (credentialsPending) {
+        credentialsPending = false;
+        connectToWiFi();
+    } else if (hasCredentials && WiFi.status() != WL_CONNECTED) {
+        if (millis() - lastReconnectAttempt >= 10000) {
+            lastReconnectAttempt = millis();
+            Serial.println("Wi-Fi disconnected. Retrying connection...");
+            connectToWiFi();
+        }
+    }
 
     // --------------------------------------------------------
-    // UPLOAD RETRY REQUEST
+    // 3. PERIODIC HEARTBEAT TO MASTER
     // --------------------------------------------------------
+    // Sends heartbeat via ESP-NOW regardless of Wi-Fi state
+    // so Master correctly displays "PWR: ON" immediately.
+    static unsigned long lastHeartbeat = 0;
+    if (millis() - lastHeartbeat >= 1000) {
+        lastHeartbeat = millis();
+        sendStatus(9); 
+    }
 
+    // --------------------------------------------------------
+    // 4. CAPTURE REQUEST
+    // --------------------------------------------------------
+    if (captureRequested) {
+        captureRequested = false;
+        bool success = captureImageAndUpload();
+        if (!success) {
+            Serial.println("Capture/upload operation failed.");
+        }
+    }
+
+    // --------------------------------------------------------
+    // 5. UPLOAD RETRY REQUEST
+    // --------------------------------------------------------
     if (uploadRequested) {
-
         uploadRequested = false;
-
         retryUpload();
-
     }
-
 
     delay(10);
 }
